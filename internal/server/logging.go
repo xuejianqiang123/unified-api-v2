@@ -25,6 +25,7 @@ var chatLogEnabled = true
 type chatStat struct {
 	start  time.Time
 	model  string
+	alias  string // 客户端请求的别名（命中全局别名表时非空）；空 = 直连模型名
 	mode   string // "stream" | "sync"
 	uid    string // 完整 uid，展示时只取前 8 位
 	nick   string // 账号昵称（auth.Auth.Nickname，登录时落盘）；空则只显示 uid8
@@ -71,6 +72,13 @@ func (s *chatStat) done() {
 	total := time.Since(s.start)
 	logChatRow(s.ttfb, total, s.model, s.mode, s.uid, s.nick, s.status, s.toks)
 	recordChatMetric(s, total)
+	// 面板「实时使用 / 请求日志」记录（activity.go）。与 metrics 同一唯一出口，
+	// 因此流式、非流式、错误路径全部覆盖，且不会重复计数。
+	recordWBActivity(activityEntry{
+		At: time.Now(), Provider: "workbuddy", Model: s.model, Alias: s.alias,
+		Account: displayAccount(s.uid, s.nick), Status: s.status,
+		MS: total.Milliseconds(), Stream: s.mode == "stream", Tokens: s.toks,
+	})
 	// 当日积分预算累计（budget.go）。只在 hasCredit 时累加：缺失≠0，与成本账本、
 	// /v1/stats 同一纪律——把「没观测到」当 0 会让用量永远涨不上去、闸形同虚设。
 	// 注意本闸是**事后**记账：这一笔已经花出去了，它挡的是后续请求。

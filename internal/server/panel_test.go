@@ -10,8 +10,7 @@ import (
 	"unified-api-v2/internal/pool"
 )
 
-func panelFakeDoubao() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+func panelFakeDoubao() http.HandlerFunc {	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/admin/status":
@@ -268,6 +267,49 @@ func TestPanelModelsSortsAutoFirst(t *testing.T) {
 		}
 		if got.Aliases[i]["auto_order"] != float64(i+1) {
 			t.Errorf("aliases[%d].auto_order=%v want %d", i, got.Aliases[i]["auto_order"], i+1)
+		}
+	}
+}
+
+// TestProviderStatusSplitsPublicAndOwn 守卫「别名数 8 / 8」的可读性修正。
+//
+// 6 个公共别名由两侧共同提供，会被同时计入两个 provider，两栏显示相同的 8
+// 容易被读成「算错了」。这里断言公共与独有的拆分口径。
+func TestProviderStatusSplitsPublicAndOwn(t *testing.T) {
+	h := NewHandler(Config{
+		Pool:         pool.New(""),
+		DoubaoHealth: func() (int, int) { return 1, 1 },
+		Aliases: map[string]UnifiedAlias{
+			"auto": {Providers: []string{"doubao", "workbuddy"}, Failover: true, Model: "x"},
+			"glm":  {Providers: []string{"doubao", "workbuddy"}, Failover: true, Model: "y"},
+			"hy":   {Provider: "workbuddy", Model: "h"},
+			"lite": {Provider: "doubao", Model: "l"},
+		},
+	})
+	st := h.providerStatus()
+	wb, ok := st["workbuddy"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing workbuddy status: %#v", st)
+	}
+	db, ok := st["doubao"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing doubao status: %#v", st)
+	}
+	// 公共 2（auto/glm）；workbuddy 独有 1（hy）；doubao 独有 1（lite）。
+	for _, c := range []struct {
+		name string
+		m    map[string]any
+	}{
+		{"workbuddy", wb}, {"doubao", db},
+	} {
+		if c.m["aliases_public"] != 2 {
+			t.Errorf("%s aliases_public=%v want 2", c.name, c.m["aliases_public"])
+		}
+		if c.m["aliases_own"] != 1 {
+			t.Errorf("%s aliases_own=%v want 1", c.name, c.m["aliases_own"])
+		}
+		if c.m["aliases"] != 3 {
+			t.Errorf("%s aliases=%v want 3", c.name, c.m["aliases"])
 		}
 	}
 }

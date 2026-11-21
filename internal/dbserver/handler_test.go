@@ -1,7 +1,9 @@
 package dbserver
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -296,5 +298,103 @@ func TestIdleStreamCutAbortsUpstream(t *testing.T) {
 	case <-upstreamDone:
 	case <-time.After(2 * time.Second):
 		t.Fatalf("上游连接未被断开（上游会继续生成、白烧额度）")
+	}
+}
+
+// 客户端主动断开（取消 request ctx，等价于浏览器/客户端关闭会话）时：
+// 必须立即断上游连接，而不是等上游自己生成完。这是「会话结束了但豆包还在工作」的根因判据。
+func TestClientCancelAbortsUpstream(t *testing.T) {
+	upstreamDone := make(chan struct{})
+	startedGen := make(chan struct{})
+	var startOnce sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fl, _ := w.(http.Flusher)
+		_, _ = io.WriteString(w, "event: CHUNK_DELTA\ndata: {\"text\":\"开头\"}\n\n")
+		if fl != nil {
+			fl.Flush()
+		}
+		startOnce.Do(func() { close(startedGen) })
+		select {
+		case <-r.Context().Done(): // 我们主动断开时，上游应立刻感知
+			close(upstreamDone)
+		case <-time.After(8 * time.Second):
+		}
+	}))
+	defer srv.Close()
+
+	s := newTestServer(t, srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"doubao","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer sk-down")
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+	go func() { s.ServeHTTP(rec, req) }()
+
+	select {
+	case <-startedGen:
+	case <-time.After(3 * time.Second):
+		cancel()
+		t.Fatal("上游未收到请求")
+	}
+	cancel() // 模拟客户端关闭会话
+
+	select {
+	case <-upstreamDone:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("客户端断开后上游连接未被主动断开（豆包会继续生成）")
+	}
+}
+
+// resetReader 首次返回一帧 SSE，随后返回非 EOF 的上游错误。
+// 复刻实测到的 `stream error: stream ID 3; INTERNAL_ERROR; received from peer`：
+// 这不是我们主动取消，而是对端重置，必须与正常结束区分。
+type resetReader struct{ gave bool }
+
+func (r *resetReader) Read(p []byte) (int, error) {
+	if !r.gave {
+		r.gave = true
+		return copy(p, "event: CHUNK_DELTA\ndata: {\"text\":\"hi\"}\n\n"), nil
+	}
+	return 0, errors.New("stream error: stream ID 3; INTERNAL_ERROR; received from peer")
+}
+
+func TestUpstreamResetIsNotReportedAsOK(t *testing.T) {
+	s := newTestServer(t, "http://127.0.0.1:0")
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"auto","stream":true}`))
+	rec := httptest.NewRecorder()
+	s.streamOut(rec, req, &resetReader{}, "k", "a1", "auto", time.Now(), nil)
+
+	out := rec.Body.String()
+	if !strings.Contains(out, `"finish_reason":"upstream_reset"`) {
+		t.Fatalf("上游 RST 必须以 upstream_reset 收尾，实际输出: %s", out)
+	}
+	if !strings.Contains(out, "data: [DONE]") {
+		t.Fatalf("缺少终止帧 [DONE]: %s", out)
+	}
+	if strings.Contains(out, `"finish_reason":"stop"`) {
+		t.Fatalf("上游 RST 不得被记成正常结束 stop: %s", out)
+	}
+}
+
+func TestUpstreamNormalFinishKeepsStopReason(t *testing.T) {
+	// 回归保护：正常结束仍必须是 stop，不能被上面的改动带偏。
+	s := newTestServer(t, "http://127.0.0.1:0")
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"auto","stream":true}`))
+	rec := httptest.NewRecorder()
+	body := strings.NewReader("event: CHUNK_DELTA\ndata: {\"text\":\"hi\"}\n\n")
+	s.streamOut(rec, req, body, "k", "a1", "auto", time.Now(), nil)
+
+	out := rec.Body.String()
+	if !strings.Contains(out, `"finish_reason":"stop"`) {
+		t.Fatalf("正常结束应为 stop，实际: %s", out)
+	}
+	if !strings.Contains(out, `"content":"hi"`) {
+		t.Fatalf("正文丢失: %s", out)
 	}
 }

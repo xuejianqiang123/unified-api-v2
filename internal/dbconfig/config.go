@@ -280,6 +280,29 @@ func (c *Config) ResolveModel(name string) string {
 	return name
 }
 
+// ModelLabel 把内部 model_item_key 反向解析为人类可读模型名，供面板展示。
+//
+// 豆包的 model_item_key 有数字形态（例如 auto 的内部 key 是 "9"），直接展示在
+// 面板「使用哪个模型」一列毫无可读性。这里按 Models 列表顺序反向查 model_aliases，
+// 顺序遍历保证结果确定（同一 key 可能被多个别名指向）。
+// 解析不到就原样返回，不编造。
+func (c *Config) ModelLabel(key string) string {
+	if key == "" {
+		return ""
+	}
+	for _, m := range c.Models {
+		if m == key {
+			return m
+		}
+	}
+	for _, m := range c.Models {
+		if c.ModelAliases[m] == key {
+			return m
+		}
+	}
+	return key
+}
+
 // ModelList /v1/models。
 func (c *Config) ModelList() []string {
 	if len(c.Models) > 0 {

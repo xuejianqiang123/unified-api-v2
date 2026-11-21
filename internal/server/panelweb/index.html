@@ -27,7 +27,7 @@ nav a.on{background:rgba(63,185,80,.12);color:var(--accent);font-weight:600}
 nav a i{width:16px;text-align:center;font-style:normal;opacity:.9}
 .sidefoot{margin-top:auto;padding:12px 16px;border-top:1px solid var(--line);font-size:11px;color:var(--dim)}
 main{flex:1;min-width:0;padding:22px 26px 40px}
-.topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:18px}
 .topbar h2{margin:0;font-size:17px;font-weight:600}
 .pill{padding:3px 10px;border-radius:99px;font-size:12px;border:1px solid transparent;white-space:nowrap}
 .ok{background:rgba(63,185,80,.14);color:var(--accent);border-color:rgba(63,185,80,.3)}
@@ -41,7 +41,7 @@ main{flex:1;min-width:0;padding:22px 26px 40px}
 .card .v small{font-size:12px;color:var(--dim);font-weight:400;margin-left:4px}
 .panel{background:var(--card);border:1px solid var(--line);border-radius:12px;margin-bottom:16px;overflow:hidden}
 .panel-h{padding:13px 16px;border-bottom:1px solid var(--line);display:flex;align-items:center;
-  justify-content:space-between;font-size:13px;font-weight:600}
+  justify-content:space-between;gap:10px;font-size:13px;font-weight:600}
 .panel-b{padding:16px}
 table{width:100%;border-collapse:collapse;font-size:13px}
 th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:middle}
@@ -100,6 +100,25 @@ tr.drag-row.dragging{opacity:.4;cursor:grabbing}
 tr.drag-row.drag-over td{border-top:2px solid var(--accent)}
 .drag-handle{color:var(--dim);font-size:14px;user-select:none;margin-right:6px}
 .pill.prio{background:rgba(88,166,255,.12);color:var(--blue);border-color:rgba(88,166,255,.3);font-variant-numeric:tabular-nums}
+/* 实时使用：指标条 + 请求表 */
+.chips{display:flex;flex-wrap:wrap;gap:10px;padding:13px 16px;border-bottom:1px solid var(--line)}
+.chip{background:#0d131a;border:1px solid var(--line);border-radius:9px;padding:6px 11px;font-size:12px;color:var(--dim)}
+.chip b{color:var(--fg);font-size:14px;font-weight:600;margin-left:6px;font-variant-numeric:tabular-nums}
+.chip.on{border-color:rgba(63,185,80,.35);color:var(--fg)}
+.scroll{max-height:430px;overflow:auto}
+.tbl-num{text-align:right;font-variant-numeric:tabular-nums;width:1%;white-space:nowrap}
+.muted{color:var(--dim)}
+.small{font-size:12px}
+/* 优先级控制弹窗 */
+.plist{display:flex;flex-direction:column;gap:6px}
+.plist-row{display:flex;align-items:center;gap:10px;background:#0d131a;border:1px solid var(--line);
+  border-radius:8px;padding:7px 10px}
+.plist-row .idx{width:20px;flex:none;text-align:center;color:var(--dim);font-size:12px;
+  font-variant-numeric:tabular-nums}
+.plist-row .nm{flex:1;min-width:0;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.plist-row .nm .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.plist-row .mv{display:flex;gap:4px;flex:none}
+.plist-row button{padding:2px 9px;font-size:12px}
 @media(max-width:820px){aside{display:none}main{padding:16px}}
 </style>
 </head>
@@ -110,12 +129,8 @@ tr.drag-row.drag-over td{border-top:2px solid var(--accent)}
     <nav id="nav">
       <a data-v="overview" class="on"><i>◈</i>概览</a>
       <a data-v="accounts"><i>◉</i>账号</a>
-      <a data-v="pool"><i>◎</i>号池</a>
-      <a data-v="keys"><i>⚿</i>密钥</a>
-      <a data-v="models"><i>▦</i>模型别名</a>
+      <a data-v="access"><i>⚿</i>接入</a>
       <a data-v="logs"><i>≡</i>请求日志</a>
-      <a data-v="test"><i>▶</i>测试台</a>
-      <a data-v="tasks"><i>⚙</i>任务</a>
       <a data-v="settings"><i>ⓘ</i>设置</a>
     </nav>
     <div class="sidefoot">unified-api-v2 · <span id="foot-port">—</span>
@@ -123,70 +138,38 @@ tr.drag-row.drag-over td{border-top:2px solid var(--accent)}
     </div>
   </aside>
   <main>
-    <div class="topbar"><h2 id="title">概览</h2><span class="pill ok" id="health">连接中…</span></div>
+    <div class="topbar"><h2 id="title">概览</h2>
+      <div class="row" style="gap:8px">
+        <button class="ghost" style="padding:5px 12px;font-size:12px" onclick="refreshView()">刷新</button>
+        <span class="pill prio" title="面板构建版本，用于判断是否已加载最新页面">{{PANEL_BUILD}}</span>
+        <span class="pill ok" id="health">连接中…</span>
+      </div>
+    </div>
 
     <section data-v="overview">
       <div class="grid cards" id="ov-cards"></div>
-      <div class="panel"><div class="panel-h">Provider 状态 <button class="ghost" onclick="loadOverview()">刷新</button></div>
-        <div class="panel-b" style="padding:0"><table id="ov-providers"></table></div></div>
-      <div class="panel"><div class="panel-h">账号健康摘要</div>
-        <div class="panel-b" id="ov-account-summary" style="padding:0"></div></div>
-      <div class="panel"><div class="panel-h">快速入口</div>
-        <div class="panel-b"><div class="row">
-          <button class="ghost" onclick="goView('accounts')">账号管理</button>
-          <button class="ghost" onclick="goView('pool')">号池状态</button>
-          <button class="ghost" onclick="goView('models')">模型别名</button>
-          <button class="ghost" onclick="goView('test')">对话测试台</button>
-          <button class="ghost" onclick="goView('tasks')">任务</button>
-        </div></div></div>
-    </section>
-
-    <section data-v="accounts" hidden>
-      <div class="panel"><div class="panel-h"><span>WorkBuddy 账号</span>
-        <span class="row" style="gap:6px">
-          <button class="ghost" onclick="openWBImport()">JSON 导入</button>
-          <button class="ghost" onclick="openWBOAuth()">OAuth 登录</button>
-          <button class="ghost" onclick="loadAccounts()">刷新</button>
-        </span></div>
-        <div class="panel-b" style="padding:0"><table id="acc-wb"></table></div></div>
-      <div class="panel"><div class="panel-h"><span>豆包账号</span>
-        <span class="row" style="gap:6px">
-          <button class="ghost" onclick="openDBCookie()">粘贴 Cookie</button>
-          <button class="ghost" onclick="openDBQR()">扫码登录</button>
-          <button class="ghost" onclick="loadAccounts()">刷新</button>
-        </span></div>
-        <div class="panel-b" style="padding:0"><table id="acc-db"></table></div></div>
-    </section>
-
-    <section data-v="pool" hidden>
-      <div class="panel"><div class="panel-h">号池实时状态 <button class="ghost" onclick="loadPool()">刷新</button></div>
-        <div class="panel-b" style="padding:0"><table id="pool-wb"></table></div></div>
-      <div class="panel"><div class="panel-h">签到记录 <button class="ghost" onclick="loadPool()">刷新</button></div>
-        <div class="panel-b" style="padding:0"><table id="pool-checkin"></table></div></div>
-    </section>
-
-    <section data-v="keys" hidden>
-      <div class="panel"><div class="panel-h">客户端接入信息 <button class="ghost" onclick="loadKeys()">刷新</button></div>
-        <div class="panel-b" style="display:flex;flex-direction:column;gap:14px" id="key-box">
-          <div class="hint" style="margin:0">加载中…</div>
-        </div></div>
-      <div class="hint">客户端只需这里的 API 地址与统一 Key，模型用「模型别名」页的任意别名（如 deepseek-v4-flash 自动路由）。WorkBuddy / 豆包各自的内部密钥属于实现细节，不在此展示。</div>
-    </section>
-
-    <section data-v="models" hidden>
-      <div class="panel"><div class="panel-h">全局别名表 <button class="ghost" onclick="loadModels()">刷新</button></div>
-        <div class="panel-b" style="padding:0"><table id="model-table"></table></div></div>
-      <div class="hint">公共模型（WorkBuddy 与豆包都提供）显示两个 Provider 标签并标注「自动切换」——按健康度选路、失败自动切另一侧；各侧独有模型只挂单个 Provider。客户端只用别名，不加前缀。修改需改 config.json 并重启。</div>
-    </section>
-
-    <section data-v="logs" hidden>
-      <div class="panel"><div class="panel-h">签到历史 <button class="ghost" onclick="loadLogs()">刷新</button></div>
-        <div class="panel-b" style="padding:0"><table id="log-checkin"></table></div></div>
-      <div class="panel"><div class="panel-h">豆包用量（7 天）<button class="ghost" onclick="loadLogs()">刷新</button></div>
-        <div class="panel-b"><pre id="log-usage">—</pre></div></div>
-    </section>
-
-    <section data-v="test" hidden>
+      <div class="panel">
+        <div class="panel-h">
+          <span>Provider 与路由 <span class="pill prio" id="ov-porder">—</span> <span class="pill prio" id="ov-mode">—</span></span>
+          <span class="row" style="gap:6px">
+            <button class="ghost" onclick="setProviderFirst('doubao',this)">豆包优先</button>
+            <button class="ghost" onclick="setProviderFirst('workbuddy',this)">WorkBuddy 优先</button>
+          </span>
+        </div>
+        <div class="panel-b" style="padding:0">
+          <table id="ov-providers"></table>
+          <div class="hint" style="padding:0 16px 10px;margin:0">顺序＝自动路由先试哪一侧（首字节前失败才切另一侧）；「优先级控制」＝同一侧内部先挑哪个账号。</div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-h"><span>实时使用 <span class="small muted" id="ov-window"></span></span>
+          <button class="ghost" onclick="goView('logs')">全部请求</button></div>
+        <div class="panel-b" style="padding:0">
+          <div class="chips" id="ov-chips"></div>
+          <div class="scroll"><table id="ov-recent"></table></div>
+        </div>
+      </div>
+      <!-- 原「测试台」页并入概览 -->
       <div class="panel"><div class="panel-h">对话测试台
         <div class="row"><select id="test-model" class="grow" style="width:180px"></select>
           <label><input type="checkbox" id="test-stream" style="width:auto"> 流式</label>
@@ -200,29 +183,66 @@ tr.drag-row.drag-over td{border-top:2px solid var(--accent)}
           </div>
           <div class="hint" id="chat-hint">同一会话内多轮对话会带上历史消息；点「清空会话」开始新会话。</div>
         </div></div>
+      <!-- 原「任务」页并入概览 -->
+      <div class="panel"><div class="panel-h"><span>签到 <span class="small muted" id="checkin-next"></span></span>
+        <span class="row" style="gap:6px">
+          <button class="ghost" onclick="askCheckinProvider('workbuddy')">仅 WorkBuddy</button>
+          <button class="ghost" onclick="askCheckinProvider('doubao')">仅豆包</button>
+          <button class="ghost" onclick="askCheckin()">全部账号</button>
+        </span></div>
+        <div class="panel-b" style="padding:0">
+          <div class="small muted" style="padding:8px 16px 4px">WorkBuddy 执行记录（最新在前）</div>
+          <table id="task-checkin"></table>
+          <div class="small muted" style="padding:10px 16px 4px">豆包签到记录（最新在前）</div>
+          <table id="task-checkin-db"></table>
+          <div class="hint" style="padding:0 16px 10px;margin:0">已签到的账号幂等返回；豆包额度见账号页与请求日志。</div>
+        </div></div>
+      <div class="panel"><div class="panel-h"><span>WorkBuddy 专属任务 <span class="tag wb">6 项</span></span></div>
+        <div class="panel-b"><div class="row" id="task-buttons"></div>
+          <div class="hint">仅对 WorkBuddy 账号生效。</div>
+        </div></div>
     </section>
 
-    <section data-v="tasks" hidden>
-      <div class="panel"><div class="panel-h">签到状态 <button class="ghost" onclick="loadCheckinState()">刷新</button></div>
-        <div class="panel-b" id="checkin-state">—</div></div>
-      <div class="panel"><div class="panel-h"><span>WorkBuddy 专属任务 <span class="tag wb">6 项</span></span>
-        <span class="row" style="gap:6px">
-          <button class="ghost" onclick="askCheckinProvider('workbuddy')">仅 WorkBuddy 签到</button>
-          <button class="ghost" onclick="askCheckin()">对全部账号签到</button>
+    <section data-v="accounts" hidden>
+      <div class="panel"><div class="panel-h"><span>账号 <span class="small muted">按账号汇总 · 管理 + 运行</span></span>
+        <span class="row" style="gap:6px;flex-wrap:wrap">
+          <button class="ghost" onclick="openWBImport()">WB JSON 导入</button>
+          <button class="ghost" onclick="openWBOAuth()">WB OAuth</button>
+          <button class="ghost" onclick="openDBCookie()">豆包 Cookie</button>
+          <button class="ghost" onclick="openDBQR()">豆包扫码</button>
         </span></div>
-        <div class="panel-b"><div class="row" id="task-buttons"></div>
-          <div class="hint">活跃地图 / token 保活 / 猫猫旅行 / 开学季 / 夜猫子为 WorkBuddy 账号专属活动，对豆包无效。</div>
+        <div class="panel-b" style="padding:0"><div class="scroll"><table id="acc-all"></table></div>
+          <div class="hint" style="padding:0 16px 10px;margin:0">拖拽限同一 Provider 内，即存顺序；停用只影响选号，不动凭证。请求列为进程内环形缓冲，重启清零；豆包积分列为额度（hover 看口径）。</div>
         </div></div>
-      <div class="panel"><div class="panel-h"><span>豆包专属任务 <span class="tag db">1 项</span></span>
-        <button class="ghost" onclick="askCheckinProvider('doubao')">仅豆包签到</button></div>
-        <div class="panel-b"><div class="row">
-          <button class="ghost" onclick="askCheckinProvider('doubao')">签到</button>
-        </div><div class="hint">豆包账号仅有签到活动；其额度/用量见「概览」与「请求日志」页。</div>
+    </section>
+
+    <!-- 接入页：合并原「密钥」与「模型别名」两页。客户端要的三样（地址 / Key / 可用别名）在一屏内闭环。 -->
+    <section data-v="access" hidden>
+      <div class="panel"><div class="panel-h"><span>客户端接入 <span class="small muted">地址 + 统一 Key；模型填下方别名</span></span></div>
+        <div class="panel-b" style="display:flex;flex-direction:column;gap:14px" id="key-box">
+          <div class="hint" style="margin:0">加载中…</div>
         </div></div>
+      <div class="panel"><div class="panel-h"><span>全局别名表 <span class="small muted">客户端 model 填这里的别名</span></span></div>
+        <div class="panel-b" style="padding:0"><div class="scroll"><table id="model-table"></table></div></div></div>
+      <div class="hint">公共模型挂两个 Provider 并标「自动切换」：按配置顺序选路、失败自动切另一侧；各侧独有模型只挂单个 Provider。改别名需改 config.json 并重启。</div>
+    </section>
+
+    <section data-v="logs" hidden>
+      <div class="panel"><div class="panel-h"><span>最近请求 <span class="small muted" id="log-window"></span></span>
+        <select id="log-filter" style="width:auto" onchange="renderLogRecent()">
+          <option value="">全部 Provider</option><option value="workbuddy">WorkBuddy</option><option value="doubao">豆包</option>
+        </select></div>
+        <div class="panel-b" style="padding:0"><div class="scroll"><table id="log-recent"></table></div>
+          <div class="hint" style="padding:0 16px 12px;margin:0">时间 / Provider / 模型（别名 → 上游真名）/ 账号 / 状态 / 耗时 / token。</div>
+        </div></div>
+      <div class="panel"><div class="panel-h">按模型汇总（当前窗口）</div>
+        <div class="panel-b" style="padding:0"><table id="log-models"></table></div></div>
+      <div class="panel"><div class="panel-h">豆包用量（7 天）</div>
+        <div class="panel-b" style="padding:0"><table id="log-usage"></table></div></div>
     </section>
 
     <section data-v="settings" hidden>
-      <div class="panel"><div class="panel-h">运行配置快照 <button class="ghost" onclick="loadSettings()">刷新</button></div>
+      <div class="panel"><div class="panel-h">运行配置快照</div>
         <div class="panel-b"><pre id="settings-json">—</pre></div></div>
     </section>
   </main>
@@ -270,77 +290,273 @@ function goView(v){
   const a=document.querySelector('#nav a[data-v="'+v+'"]');if(!a)return;
   document.querySelectorAll('#nav a').forEach(x=>x.classList.remove('on'));
   a.classList.add('on');currentView=v;
-  document.getElementById('title').textContent=a.textContent.trim();
+  document.getElementById('title').textContent=a.textContent.replace(/[◈◉◎⚿▦≡▶⚙ⓘ]/g,'').trim();
   document.querySelectorAll('section[data-v]').forEach(s=>s.hidden=(s.dataset.v!==v));
   loadView(v);
   window.scrollTo({top:0,behavior:'smooth'});
 }
 document.querySelectorAll('#nav a').forEach(a=>a.onclick=()=>goView(a.dataset.v));
 
+// 全页唯一的刷新入口：只重载当前页签，替代此前每个面板各挂一个「刷新」。
+function refreshView(){loadView(currentView);}
+
 function loadView(v){
-  ({overview:loadOverview,accounts:loadAccounts,pool:loadPool,keys:loadKeys,
-    models:loadModels,logs:loadLogs,test:loadModels,
-    tasks:()=>loadCheckinState(),settings:loadSettings})[v]?.();
+  ({overview:loadOverview,accounts:loadAccounts,access:loadAccess,
+    logs:loadLogs,settings:loadSettings})[v]?.();
+}
+
+/* ---------- 实时使用 / 请求日志：公共格式化 ---------- */
+function fmtTime(iso){if(!iso)return '—';const d=new Date(iso);if(isNaN(d.getTime()))return String(iso);
+  const p=n=>String(n).padStart(2,'0');
+  return p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());}
+// fmtTS 接受秒或毫秒时间戳：豆包签到结果的 ts 是 Unix 秒（后端 time.Now().Unix()）。
+function fmtTS(v){const n=Number(v);if(!n)return '—';return fmtTime(new Date(n>1e12?n:n*1000).toISOString());}
+function fmtDur(ms){if(ms==null||ms<0)return '—';if(ms<1000)return ms+'ms';
+  return (ms/1000).toFixed(ms<10000?2:1)+'s';}
+function fmtTok(t){if(t==null||t<0)return '—';if(t>=1000)return (t/1000).toFixed(1)+'k';return String(t);}
+function stBadge(code){if(!code)return badge('—','warn');
+  return (code>=200&&code<400)?badge(code,'ok'):badge(code,'bad');}
+function modelCell(e){
+  // 主显示：客户端请求的别名；副显示：可读上游名 + 内部 key。
+  // 豆包内部 key 有数字形态（auto → 9），单独标「内部 key」避免被当成模型名或脏数据。
+  const main=e.alias||e.model_name||e.model||'—';
+  const nm=(e.model_name&&e.model_name!==main)?e.model_name:'';
+  const key=(e.model&&e.model!==main&&e.model!==nm)?e.model:'';
+  const parts=[];
+  if(nm)parts.push(nm);
+  if(key)parts.push('内部 key '+key);
+  const extra=parts.length?'<span class="small muted"> → '+esc(parts.join(' / '))+'</span>':'';
+  return '<span class="mono" style="color:var(--fg)">'+esc(main)+'</span>'+extra;
+}
+// renderRecent 渲染请求流水表；limit 控制概览（少）与日志页（多）复用同一份渲染逻辑。
+function renderRecent(el,rows,limit){
+  el.innerHTML='<tr><th>时间</th><th>Provider</th><th>模型</th><th>账号</th><th>状态</th>'+
+    '<th class="tbl-num">耗时</th><th class="tbl-num">Token</th></tr>'+
+    (rows.length?rows.slice(0,limit).map(e=>'<tr>'+
+      '<td class="small muted">'+esc(fmtTime(e.at))+'</td>'+
+      '<td>'+tag(e.provider)+'</td>'+
+      '<td>'+modelCell(e)+(e.stream?' <span class="tag">流式</span>':'')+'</td>'+
+      '<td>'+esc(e.account||'—')+'</td>'+
+      '<td>'+stBadge(e.status)+'</td>'+
+      '<td class="tbl-num">'+esc(fmtDur(e.ms))+'</td>'+
+      '<td class="tbl-num">'+esc(fmtTok(e.tokens))+'</td></tr>').join('')
+    :emptyRow(7,'窗口内暂无请求（进程重启会清零）'));
 }
 
 async function loadOverview(){
   try{
-    const d=await api('/overview');
+    const [d,act]=await Promise.all([api('/overview'),api('/activity')]);
     const wb=d.workbuddy||{},db=(d.doubao||{}).data||{};
     document.getElementById('health').textContent='已连接';
     document.getElementById('health').className='pill ok';
-    const ab=d.alias_breakdown||{};
+    // 卡片只留两张 Provider 健康度。别名明细归「接入」页；
+    // 手动停用 / 待重登录在「账号」页逐账号可见，卡片只是重复计数，均不在此渲染。
     document.getElementById('ov-cards').innerHTML=[
-      ['服务','unified-api-v2',''],
-      ['全局别名',d.aliases,'自动 '+(ab.auto??'—')+' / 独立 '+(ab.single??'—')],
       ['WorkBuddy 健康',wb.healthy,'/ '+(wb.total??0)],
       ['豆包健康',db.healthy,'/ '+(db.total??0)],
-      ['手动停用',wb.manual_stopped??0,'个账号'],
-      ['待重登录',wb.needs_relogin??0,'个账号'],
     ].map(([k,v,s])=>'<div class="card"><div class="k">'+esc(k)+'</div><div class="v">'+esc(v)+'<small>'+esc(s)+'</small></div></div>').join('');
-    const p=d.providers||{};
-    document.getElementById('ov-providers').innerHTML='<tr><th>Provider</th><th>别名数</th><th>健康</th><th>总数</th><th>状态</th></tr>'+
-      ['workbuddy','doubao'].map(n=>{
-        const x=p[n]||{};const ok=n==='workbuddy'||(x.total||0)>0;
-        return '<tr><td>'+tag(n)+'</td><td>'+esc(x.aliases??'—')+'</td><td>'+esc(x.healthy??'—')+'</td><td>'+esc(x.total??'—')+'</td><td>'+badge(ok?'在线':'未启用',ok?'ok':'bad')+'</td></tr>';
-      }).join('');
-    // 账号健康摘要：各维度异常数，一点即跳到对应页面处理。
-    const abnormal=(wb.disabled??0)+(wb.cooling??0)+(wb.manual_stopped??0)+(wb.needs_relogin??0);
-    document.getElementById('ov-account-summary').innerHTML='<table>'+
-      '<tr><th>维度</th><th>WorkBuddy</th><th>豆包</th><th>说明</th></tr>'+
-      '<tr><td>账号总数</td><td>'+esc(wb.total??0)+'</td><td>'+esc(db.total??0)+'</td><td>点击「账号管理」查看明细</td></tr>'+
-      '<tr><td>健康</td><td>'+badge(String(wb.healthy??0),'ok')+'</td><td>'+badge(String(db.healthy??0),'ok')+'</td><td>可参与选号</td></tr>'+
-      '<tr><td>手动停用</td><td>'+badge(String(wb.manual_stopped??0),wb.manual_stopped?'bad':'ok')+'</td><td>—</td><td>运维主动摘除，需点「启用」恢复</td></tr>'+
-      '<tr><td>系统停用 / 冷却</td><td>'+badge(String((wb.disabled??0)+(wb.cooling??0)),((wb.disabled??0)+(wb.cooling??0))?'warn':'ok')+'</td><td>—</td><td>系统判定，需 revive 或等冷却</td></tr>'+
-      '<tr><td>待重登录</td><td>'+badge(String(wb.needs_relogin??0),wb.needs_relogin?'warn':'ok')+'</td><td>—</td><td>token 过期或需重新授权</td></tr>'+
-      '<tr><td>结论</td><td colspan="3">'+(abnormal===0?badge('全部正常','ok'):badge(abnormal+' 项需关注','warn'))+'</td></tr>'+
-      '</table>';
+    // 选号模式直接取 pool 的实际状态（act.selection_mode），不在前端另存一份。
+    const mode=act.selection_mode||d.selection_mode||'weighted';
+    const mEl=document.getElementById('ov-mode');
+    mEl.textContent=mode==='priority'?'选号：优先级':'选号：加权随机';
+    mEl.className='pill '+(mode==='priority'?'prio':'warn');
+    // 路由顺序与 Provider 明细合并为一张表：原「路由优先级」+「Provider 状态」两块重复展示同一批 Provider。
+    const po=d.provider_order||{},order=po.order||['doubao','workbuddy'];
+    const el=document.getElementById('ov-porder');
+    el.textContent=(order[0]==='doubao'?'豆包':'WorkBuddy')+' 优先';
+    const p=d.providers||{},infl=act.in_flight||{};
+    const rows=order.map((n,i)=>{
+      const x=p[n]||{};const ok=n==='workbuddy'||(x.total||0)>0;
+      const ctl=ok?'<button class="ghost" onclick="openPrio(\''+n+'\')">优先级控制</button>':'<span class="small muted">未启用</span>';
+      // 公共别名两侧共用，不能相加理解；显式拆「公共 / 独有」。
+      const ali=x.aliases_public!=null?esc(x.aliases_public)+' / '+esc(x.aliases_own??0):esc(x.aliases??'—');
+      return '<tr><td class="tbl-num mono">'+(i+1)+'</td><td>'+tag(n)+'</td>'+
+        '<td class="mono">'+ali+'</td>'+
+        '<td>'+badge(String(x.healthy??'—'),'ok')+' <span class="small muted">/ '+esc(x.total??0)+'</span></td>'+
+        '<td class="tbl-num">'+esc(infl[n]??0)+'</td>'+
+        '<td>'+badge(ok?'在线':'未启用',ok?'ok':'bad')+'</td><td>'+ctl+'</td></tr>';
+    }).join('')+
+      '<tr><td colspan="7" class="small muted" style="padding:6px 12px">顺序来源：'+
+      esc(po.source==='override'?'已保存的运行时偏好':'来自别名配置')+'</td></tr>';
+    document.getElementById('ov-providers').innerHTML=
+      '<tr><th style="width:52px">顺序</th><th>Provider</th><th>别名（公共 / 独有）</th>'+
+      '<th>健康 / 总数</th><th class="tbl-num">在途</th><th>状态</th><th>账号优先级</th></tr>'+rows;
+    // 实时使用：近 5 分钟吞吐（在途已在 Provider 表逐行给出，此处不再重复）。
+    const l5=(act.last5m||{});
+    const req5=(l5.workbuddy?.requests??0)+(l5.doubao?.requests??0);
+    const ok5=l5.ok??0;
+    document.getElementById('ov-chips').innerHTML=[
+      ['近 5 分钟',req5,'次'],
+      ['其中成功',ok5,'次'],
+      ['成功率',req5?Math.round(ok5*100/req5)+'%':'—',''],
+    ].map(([k,v,s])=>'<div class="chip'+(Number(String(v).replace('%',''))>0?' on':'')+'">'+esc(k)+'<b>'+esc(v)+'</b>'+esc(s)+'</div>').join('');
+    const win=act.window||{};
+    document.getElementById('ov-window').textContent='窗口 '+(win.count||0)+'/'+(win.capacity||0);
+    renderRecent(document.getElementById('ov-recent'),act.recent||[],8);
+    // 原「测试台」「任务」两页已并入概览：一并驱动其下拉与表格。
+    // loadModels 顺带刷新接入页的别名表（隐藏元素，无副作用）。
+    loadModels();loadTasks();
   }catch(e){document.getElementById('health').textContent='连接失败';
     document.getElementById('health').className='pill bad';toast(e.message,true);}
 }
 
+/* ---------- Provider 路由优先序（概览页控件） ---------- */
+// 与「账号优先级」是两件事：这里决定自动路由别名先试豆包还是先试 WorkBuddy；
+// 账号优先级决定同一 provider 内部先挑哪个账号。
+async function setProviderFirst(first,btn){
+  if(btn)btn.disabled=true;
+  try{
+    const r=await post('/provider-order',{first});
+    toast((first==='doubao'?'已设为豆包优先':'已设为 WorkBuddy 优先')+(r.persisted?'（已落盘）':'（仅本次运行）'));
+    loadOverview();
+  }catch(e){toast(e.message,true);}finally{if(btn)btn.disabled=false;}
+}
+
+/* ---------- 优先级控制（运行时切换模式 + 组内排序） ---------- */
+let prioState=null;
+async function openPrio(provider){
+  try{
+    const [accs,ov]=await Promise.all([api('/accounts'),api('/overview')]);
+    const mode=ov.selection_mode||'weighted';
+    let items=[];
+    if(provider==='workbuddy'){
+      items=(accs.workbuddy||[]).map(a=>({id:a.uid,
+        label:(a.nickname?a.nickname+' · ':'')+String(a.uid||'').slice(0,8),
+        priority:a.priority||0,in_flight:a.in_flight||0,
+        disabled:!!(a.disabled||a.manual_disabled),cooling:!!a.cooling}));
+    }else{
+      const stats=((ov.doubao||{}).data||{}).accounts||[];
+      const meta=((accs.doubao||{}).accounts)||[];
+      const notes={};meta.forEach(a=>{notes[a.name]=a.note;});
+      items=(stats.length?stats:meta).map(s=>({id:s.name,
+        label:(s.name||'—')+(notes[s.name]?' · '+notes[s.name]:''),
+        priority:s.priority||0,in_flight:s.in_flight||0,
+        disabled:!!s.disabled,cooling:!!s.cooling}));
+    }
+    // 0 = 未排序（新加入）→ 排到最后，避免把「未排序」误读成「最高优先级」。
+    items.sort((a,b)=>((a.priority||1e9)-(b.priority||1e9)));
+    prioState={provider,mode,items};
+    document.getElementById('dlg-title').textContent=(provider==='workbuddy'?'WorkBuddy':'豆包')+' · 优先级控制';
+    renderPrio();
+    document.getElementById('acct-mask').classList.add('on');
+  }catch(e){toast(e.message,true);}
+}
+function renderPrio(){
+  if(!prioState)return;
+  const {mode,items}=prioState;
+  const rows=items.length?items.map((it,i)=>
+    '<div class="plist-row"><span class="idx">'+(i+1)+'</span><span class="nm"><span class="t">'+esc(it.label)+'</span>'+
+    (it.disabled?badge('停用','bad'):'')+(it.cooling?badge('冷却','warn'):'')+
+    (it.in_flight?'<span class="pill ok">在途 '+esc(it.in_flight)+'</span>':'')+
+    '</span><span class="mv">'+
+    '<button class="ghost" onclick="movePrio('+i+',-1)" '+(i===0?'disabled':'')+'>↑</button>'+
+    '<button class="ghost" onclick="movePrio('+i+',1)" '+(i===items.length-1?'disabled':'')+'>↓</button>'+
+    '</span></div>').join(''):emptyRow(1,'该 Provider 无账号');
+  document.getElementById('dlg-body').innerHTML=
+    '<div class="note">当前选号模式：<b>'+(mode==='priority'?'优先级（严格按序号选号）':'加权随机（排序不参与选号）')+'</b><br>'+
+      '模式切换即时生效但不写 config.json；重启后按配置文件的 pool.selection_mode 恢复。</div>'+
+    '<div class="row" style="gap:8px"><button class="ghost" onclick="setMode(\'weighted\')">加权随机</button>'+
+      '<button class="ghost" onclick="setMode(\'priority\')">优先级</button></div>'+
+    '<div class="plist">'+rows+'</div>'+
+    '<div class="hint" style="margin:0">序号 1 最优先。点 ↑↓ 调整，「未排序」= 新加入且未参与排序，仅在已排序账号不可用时才轮到。</div>';
+  document.getElementById('dlg-foot').innerHTML='<button class="ghost" onclick="closeDlg()">取消</button>'+
+    '<button onclick="savePrio()" '+(items.length?'':'disabled')+'>保存排序</button>';
+}
+function movePrio(i,dir){
+  if(!prioState)return;
+  const items=prioState.items,j=i+dir;
+  if(j<0||j>=items.length)return;
+  const t=items[i];items[i]=items[j];items[j]=t;
+  renderPrio();
+}
+async function setMode(mode){
+  try{
+    const r=await post('/pool/mode',{mode});
+    prioState.mode=r.mode;
+    renderPrio();
+    toast('选号模式已切换为 '+r.mode+'（本次运行生效）');
+    loadOverview();
+  }catch(e){toast(e.message,true);}
+}
+async function savePrio(){
+  if(!prioState)return;
+  const {provider,items}=prioState;
+  try{
+    await post('/accounts/order',{provider,names:items.map(i=>i.id)});
+    toast('优先级已保存');
+    closeDlg();
+    loadOverview();
+    if(currentView==='accounts')loadAccounts();
+  }catch(e){toast(e.message,true);}
+}
+
+// dragRow 返回 <tr> 的属性串（**不含结尾的 >**）。
+// 调用方写法固定为 '<tr'+dragRow(...)+'>...'；若此处再带一个 '>'，
+// 每行会多出一个文本节点，浏览器按表格模型把它提升到表格外，页面上表现为多余的 ">" 残字。
 function dragRow(provider,id,label){
   return ' draggable="true" class="drag-row" data-provider="'+esc(provider)+'" data-id="'+esc(id)+'"'+
     ' ondragstart="onDragStart(event)" ondragover="onDragOver(event)" ondragleave="onDragLeave(event)"'+
-    ' ondrop="onDrop(event)" ondragend="onDragEnd(event)" title="拖拽调整优先级">';
+    ' ondrop="onDrop(event)" ondragend="onDragEnd(event)" title="拖拽调整优先级"';
 }
 function prioBadge(p){return '<span class="pill prio">'+(p&&p>0?esc(p):'—')+'</span>';}
 
+// 账号页只保留「管理与操作」维度：优先级、启停、导入。积分/在途/成功率归「号池」页。
+// 账号页：合并原「账号管理」+「号池」两页为一张表——同一账号一行，管理与运行不再分两处。
+// 数据源：/accounts（元数据、优先级、启停）+ /pool（WB 积分·冷却·连续失败）
+//        + /activity（实时状态、窗口统计、最近活动）；豆包额度由 refreshQuota() 异步回填。
 async function loadAccounts(){
   try{
-    const d=await api('/accounts');
-    const wb=(d.workbuddy||[]).slice().sort((x,y)=>(x.priority||999)-(y.priority||999));
-    document.getElementById('acc-wb').innerHTML='<tr><th>拖拽</th><th>UID</th><th>昵称</th><th>积分</th><th>优先级</th><th>状态</th><th>操作</th></tr>'+
-      (wb.length?wb.map(a=>'<tr'+dragRow('workbuddy',a.uid)+'><td><span class="drag-handle">⠿</span></td><td class="mono">'+esc(a.uid)+'</td><td>'+esc(a.nickname||'—')+'</td><td>'+esc(a.credits??0)+'</td><td>'+prioBadge(a.priority)+'</td><td>'+
-        badge((a.disabled||a.manual_disabled)?'已停用':(a.cooling?'冷却中':'健康'),(a.disabled||a.manual_disabled)?'bad':(a.cooling?'warn':'ok'))+
-        '</td><td><button class="ghost" onclick="toggleAcc(\'workbuddy\',\''+esc(a.uid)+'\',this)">'+((a.disabled||a.manual_disabled)?'启用':'停用')+'</button></td></tr>').join('')
-        :emptyRow(7,'无账号'));
-    const da=((d.doubao||{}).accounts||[]).slice().sort((x,y)=>(x.priority||999)-(y.priority||999));
-    document.getElementById('acc-db').innerHTML='<tr><th>拖拽</th><th>账号</th><th>备注</th><th>失败数</th><th>优先级</th><th>状态</th><th>操作</th></tr>'+
-      (da.length?da.map(a=>'<tr'+dragRow('doubao',a.name)+'><td><span class="drag-handle">⠿</span></td><td class="mono">'+esc(a.name)+'</td><td>'+esc(a.note||'—')+'</td><td>'+esc(a.fails||0)+'</td><td>'+prioBadge(a.priority)+'</td><td>'+
-        badge((a.disabled||a.manual_disabled)?'已停用':(a.cooling?'冷却中':'健康'),(a.disabled||a.manual_disabled)?'bad':(a.cooling?'warn':'ok'))+
-        '</td><td><button class="ghost" onclick="toggleAcc(\'doubao\',\''+esc(a.name)+'\',this)">'+((a.disabled||a.manual_disabled)?'启用':'停用')+'</button></td></tr>').join('')
-        :emptyRow(6,'无账号或 provider 未启用'));
+    const [d,p,act]=await Promise.all([api('/accounts'),api('/pool').catch(()=>({})),api('/activity').catch(()=>({}))]);
+    // 运行数据按 provider|account 索引（activity.account 与 acctLabel 口径一致）。
+    const run={};
+    ((act.accounts)||[]).forEach(a=>{run[a.provider+'|'+a.account]=a;});
+    // WorkBuddy 额度/冷却按 acctLabel 索引。
+    const wbMeta={};
+    (((p.workbuddy||{}).accounts)||[]).forEach(a=>{
+      wbMeta[acctLabel(a.uid,a.nickname)]={credits:a.credits,cool:a.cool_remaining_sec||0,cf:a.consecutive_fails||0};
+    });
+
+    const rows=[];
+    ((d.workbuddy||[]).slice().sort((x,y)=>(x.priority||999)-(y.priority||999))).forEach(a=>{
+      const label=acctLabel(a.uid,a.nickname), m=wbMeta[label]||{};
+      rows.push({provider:'workbuddy',id:a.uid,label:label,tip:String(a.uid||''),
+        priority:a.priority,disabled:!!(a.disabled||a.manual_disabled),cooling:!!a.cooling,
+        credit:esc(m.credits??'—'),cool:m.cool,cf:m.cf,run:run['workbuddy|'+label]||{}});
+    });
+    (((d.doubao||{}).accounts)||[]).slice().sort((x,y)=>(x.priority||999)-(y.priority||999)).forEach(a=>{
+      rows.push({provider:'doubao',id:a.name,label:(a.name||'—'),tip:(a.note||a.name||''),
+        priority:a.priority,disabled:!!a.disabled,cooling:!!a.cooling,
+        // 豆包额度是上游 commerce 查询，异步回填，先占位。
+        credit:'<span class="small muted">…</span>',cool:0,cf:null,run:run['doubao|'+a.name]||{}});
+    });
+
+    document.getElementById('acc-all').innerHTML=
+      '<tr><th>拖拽</th><th>Provider</th><th>账号</th><th class="tbl-num">优先级</th><th class="tbl-num">积分</th>'+
+      '<th>状态</th><th class="tbl-num">冷却</th><th class="tbl-num">在途</th><th class="tbl-num">请求</th>'+
+      '<th class="tbl-num">成功</th><th class="tbl-num">失败</th><th class="tbl-num">连续失败</th>'+
+      '<th class="tbl-num">平均耗时</th><th>最近活动</th><th>操作</th></tr>'+
+      (rows.length?rows.map(r=>{
+        const st=r.disabled?badge('已停用','bad'):(r.cooling?badge('冷却中','warn'):badge('健康','ok'));
+        const qattr=r.provider==='doubao'?' data-qprov="doubao" data-qacc="'+esc(r.id||'')+'"':'';
+        return '<tr'+dragRow(r.provider,r.id)+'>'+
+          '<td><span class="drag-handle">⠿</span></td>'+
+          '<td>'+tag(r.provider)+'</td>'+
+          '<td class="mono" title="'+esc(r.tip||'')+'">'+esc(r.label)+'</td>'+
+          '<td class="tbl-num">'+prioBadge(r.priority)+'</td>'+
+          '<td class="tbl-num"'+qattr+'>'+r.credit+'</td>'+
+          '<td>'+st+'</td>'+
+          '<td class="tbl-num">'+(r.cool?esc(r.cool)+'s':'—')+'</td>'+
+          '<td class="tbl-num">'+(r.run.in_flight?'<span class="pill ok">'+esc(r.run.in_flight)+'</span>':'0')+'</td>'+
+          '<td class="tbl-num">'+esc(r.run.requests||0)+'</td>'+
+          '<td class="tbl-num">'+esc(r.run.ok||0)+'</td>'+
+          '<td class="tbl-num">'+esc(r.run.fail||0)+'</td>'+
+          '<td class="tbl-num">'+(r.cf?esc(r.cf):'—')+'</td>'+
+          '<td class="tbl-num">'+(r.run.requests?esc(fmtDur(r.run.avg_ms)):'—')+'</td>'+
+          '<td class="small muted">'+esc(fmtTime(r.run.last_at))+'</td>'+
+          '<td><button class="ghost" onclick="toggleAcc(\''+r.provider+'\',\''+esc(r.id||'')+'\',this)">'+(r.disabled?'启用':'停用')+'</button></td>'+
+          '</tr>';
+      }).join(''):emptyRow(15,'无账号'));
+    refreshQuota();
   }catch(e){toast(e.message,true);}
 }
 
@@ -376,7 +592,11 @@ async function onDrop(e){
   // DOM 中移动行
   if(fromIdx<toIdx)target.parentNode.insertBefore(dragSrc,target.nextSibling);
   else target.parentNode.insertBefore(dragSrc,target);
-  const ids=Array.from(body.querySelectorAll('tr.drag-row')).map(r=>r.dataset.id);
+  // 合表后同一张表里有两个 Provider 的行，提交顺序必须只取当前 Provider 的，
+  // 否则后端会以「names 未恰好包含全部账号一次」拒绝。
+  const ids=Array.from(body.querySelectorAll('tr.drag-row'))
+    .filter(r=>r.dataset.provider===provider)
+    .map(r=>r.dataset.id);
   // 拖拽即时生效，不弹确认（用户 2026-11-21 要求）；失败自动回滚 UI。
   try{
     await post('/accounts/order',{provider:provider,names:ids});
@@ -392,26 +612,39 @@ async function toggleAcc(provider,name,btn){
     toast('操作成功');loadAccounts();}catch(e){toast(e.message,true);}
 }
 
-async function loadPool(){
-  try{
-    const d=await api('/pool');
-    const wb=((d.workbuddy||{}).accounts||[]).slice().sort((x,y)=>(x.priority||999)-(y.priority||999));
-    const st=a=>{
-      if(a.manual_disabled)return badge('手动停用','bad');
-      if(a.disabled)return badge('系统停用','bad');
-      if(a.token_expired||a.needs_relogin)return badge('待重登录','warn');
-      if(a.cooling)return badge('冷却中','warn');
-      return badge('健康','ok');
-    };
-    document.getElementById('pool-wb').innerHTML='<tr><th>UID</th><th>昵称</th><th>积分</th><th>优先级</th><th>状态</th><th>冷却剩余</th><th>在途</th><th>成功数</th><th>连续失败</th></tr>'+
-      (wb.length?wb.map(a=>'<tr><td class="mono">'+esc(a.uid)+'</td><td>'+esc(a.nickname||'—')+'</td><td>'+esc(a.credits??'—')+'</td><td>'+prioBadge(a.priority)+'</td><td>'+
-        st(a)+'</td><td>'+(a.cool_remaining_sec?esc(a.cool_remaining_sec)+'s':'—')+'</td><td>'+esc(a.in_flight??0)+'</td><td>'+esc(a.success_count??'—')+'</td><td>'+esc(a.consecutive_fails??0)+'</td></tr>').join('')
-        :emptyRow(9,'无账号'));
-    const recs=(d.workbuddy||{}).checkins||[];
-    document.getElementById('pool-checkin').innerHTML='<tr><th>时间</th><th>成功</th><th>已签</th><th>失败</th><th>跳过</th></tr>'+
-      (recs.length?recs.slice(0,20).map(r=>'<tr><td>'+esc(r.finished_at||r.started_at||'—')+'</td><td>'+esc(r.ok??'—')+'</td><td>'+esc(r.already??'—')+'</td><td>'+esc(r.fail??'—')+'</td><td>'+esc(r.skipped??'—')+'</td></tr>').join('')
-        :emptyRow(5,'暂无签到记录'));
-  }catch(e){toast(e.message,true);}
+// 账号标签口径与后端 logfmt.Label 一致：昵称(uid8)，无昵称用 uid8。
+function acctLabel(uid,nick){
+  const u=String(uid||''),n=String(nick||'').trim();
+  if(n)return n+'('+u.slice(0,8)+')';
+  return u.slice(0,8)||'-';
+}
+
+// refreshQuota 异步回填豆包额度，避免上游（commerce/quota）慢时拖住整页渲染。
+// 口径：豆包返回 total/used/remaining（额度），与 WorkBuddy 的 credits 不同，
+// hover 显示 total/used 明细并在单元格加 * 标记。
+async function refreshQuota(){
+  let d;
+  try{ d=await api('/quota'); }catch(_){ setQuotaCells(null); return; }
+  const q={};
+  ((d&&d.accounts)||[]).forEach(a=>{q[a.name]=a;});
+  setQuotaCells(q);
+}
+function setQuotaCells(q){
+  document.querySelectorAll('[data-qprov="doubao"]').forEach(td=>{
+    const acc=td.dataset.qacc||'';
+    if(!q){ td.innerHTML='<span class="small muted">—</span>'; return; }
+    const it=q[acc];
+    if(!it){ td.innerHTML='<span class="small muted">—</span>'; return; }
+    if(it.error){
+      // 上游取不到时如实显示原因，不伪造数字。
+      td.innerHTML='<span class="small muted" title="'+esc(it.error)+'">—</span>';
+      return;
+    }
+    const rem=Number(it.remaining||0),tot=Number(it.total||0),used=Number(it.used||0);
+    const txt=(Math.round(rem*10)/10)+'*';
+    const tip='豆包额度：剩余 '+rem+' / 总量 '+tot+'（已用 '+used+'）\n* 与 WorkBuddy 积分口径不同';
+    td.innerHTML='<span title="'+esc(tip)+'">'+esc(txt)+'</span>';
+  });
 }
 
 function keyRow(label,value,desc){
@@ -420,6 +653,9 @@ function keyRow(label,value,desc){
     '<input id="kv-'+label+'" class="grow" readonly value="'+esc(value)+'" style="font-family:ui-monospace,monospace;font-size:12px">'+
     '<button class="ghost" onclick="copyKey(\''+label+'\',this)" style="flex:none">复制</button></div></div>';
 }
+// 接入页 = 凭证 + 别名表。两者是客户端接入的同一套信息（地址 / Key / 可填的 model），
+// 合并后一屏闭环，不必在两页间取参数。
+function loadAccess(){loadKeys();loadModels();}
 async function loadKeys(){
   try{
     const d=await api('/keys');
@@ -458,23 +694,92 @@ async function loadModels(){
   }catch(e){toast(e.message,true);}
 }
 
+let logState=null;
+function renderLogRecent(){
+  const act=logState||{recent:[]};
+  const f=(document.getElementById('log-filter')||{}).value||'';
+  const rows=(act.recent||[]).filter(e=>!f||e.provider===f);
+  renderRecent(document.getElementById('log-recent'),rows,200);
+}
+// 日志页只留「请求维度」：最近请求 + 按模型汇总 + 豆包用量。
+// 账号维度统一在「号池」页，签到记录统一在「任务」页，避免同一批数据两处各画一张表。
 async function loadLogs(){
   try{
-    const d=await api('/logs');const recs=d.checkins||[];
-    document.getElementById('log-checkin').innerHTML='<tr><th>开始</th><th>结束</th><th>成功</th><th>已签</th><th>失败</th></tr>'+
-      (recs.length?recs.slice(0,30).map(r=>'<tr><td>'+esc(r.started_at||'—')+'</td><td>'+esc(r.finished_at||'—')+'</td><td>'+esc(r.ok??'—')+'</td><td>'+esc(r.already??'—')+'</td><td>'+esc(r.fail??'—')+'</td></tr>').join('')
-        :emptyRow(5,'暂无记录'));
-    document.getElementById('log-usage').textContent=JSON.stringify(d.doubao_usage||{},null,2);
+    const [d,act]=await Promise.all([api('/logs'),api('/activity')]);
+    logState=act;
+    const win=act.window||{};
+    document.getElementById('log-window').textContent='（窗口内 '+(win.count||0)+' 条，满 '+(win.capacity||0)+' 条后覆盖最旧）';
+    renderLogRecent();
+
+    const ms=act.models||[];
+    document.getElementById('log-models').innerHTML=
+      '<tr><th>上游模型</th><th>Provider</th><th>客户端别名</th><th class="tbl-num">请求</th><th class="tbl-num">成功</th>'+
+      '<th class="tbl-num">失败</th><th class="tbl-num">平均耗时</th><th class="tbl-num">Token</th><th>最近</th></tr>'+
+      (ms.length?ms.map(m=>'<tr><td class="mono" style="color:var(--fg)">'+esc(m.model||'—')+'</td>'+
+        '<td>'+tag(m.provider)+'</td><td class="small muted">'+esc(m.alias||'—')+'</td>'+
+        '<td class="tbl-num">'+esc(m.requests)+'</td><td class="tbl-num">'+esc(m.ok)+'</td>'+
+        '<td class="tbl-num">'+esc(m.fail)+'</td><td class="tbl-num">'+esc(fmtDur(m.avg_ms))+'</td>'+
+        '<td class="tbl-num">'+esc(fmtTok(m.tokens))+'</td>'+
+        '<td class="small muted">'+esc(fmtTime(m.last_at))+'</td></tr>').join('')
+        :emptyRow(9,'窗口内暂无请求'));
+
+    const u=(d.doubao_usage||{}).usage||[];
+    document.getElementById('log-usage').innerHTML=
+      '<tr><th>密钥</th><th class="tbl-num">累计请求</th><th class="tbl-num">今日请求</th>'+
+      '<th class="tbl-num">今日 Token</th><th>最近</th></tr>'+
+      (u.length?u.map(r=>'<tr><td class="mono">'+esc(r.name||r.key_id||'—')+'</td>'+
+        '<td class="tbl-num">'+esc(r.requests??'—')+'</td><td class="tbl-num">'+esc(r.today_requests??'—')+'</td>'+
+        '<td class="tbl-num">'+esc(fmtTok(r.today_tokens))+'</td>'+
+        '<td class="small muted">'+esc(r.last_ts?fmtTime(new Date(r.last_ts*1000).toISOString()):'—')+'</td></tr>').join('')
+        :emptyRow(5,'暂无用量（豆包未启用或 7 天内无请求）'));
   }catch(e){toast(e.message,true);}
 }
 
-async function loadCheckinState(){
+// 任务页：签到状态 + 签到历史 + WorkBuddy 专属任务。
+// 原「豆包专属任务」整块只有签到一个动作，与签到块重复，已合并为同一组按钮。
+async function loadTasks(){
   try{
-    const d=await api('/checkin');
-    const next=d.workbuddy?.next;
-    document.getElementById('checkin-state').innerHTML='<div>下次自动签到：<span class="mono">'+
-      (next?esc(new Date(next).toLocaleString()):'未配置')+'</span></div>'+
-      '<div class="hint">签到任务已按 Provider 分组：WorkBuddy 走账号池调度，豆包走 provider 原生签到，互不混用。</div>';
+    const [c,p]=await Promise.all([api('/checkin'),api('/pool')]);
+    // 状态行：两个 Provider 各报各的。此前只渲染 workbuddy.next，豆包的每日时点被丢掉。
+    const wbNext=(c.workbuddy||{}).next, dbS=c.doubao||{};
+    document.getElementById('checkin-next').textContent=[
+      wbNext?'WB 下次 '+new Date(wbNext).toLocaleString():'WB 未配置自动签到',
+      dbS.enabled?'豆包每日 '+(dbS.hour??9)+':00 自动签到':'豆包未启用自动签到',
+    ].join(' · ');
+
+    // WorkBuddy 执行记录：统一按开始时间倒序（最新在前），不依赖后端返回顺序。
+    const recs=(((p.workbuddy||{}).checkins)||[]).slice()
+      .sort((a,b)=>new Date(b.started_at||0)-new Date(a.started_at||0));
+    document.getElementById('task-checkin').innerHTML=
+      '<tr><th>开始</th><th>结束</th><th class="tbl-num">耗时</th><th class="tbl-num">成功</th>'+
+      '<th class="tbl-num">已签</th><th class="tbl-num">失败</th><th class="tbl-num">跳过</th></tr>'+
+      (recs.length?recs.slice(0,20).map(r=>{
+        const s=r.started_at?new Date(r.started_at):null,e=r.finished_at?new Date(r.finished_at):null;
+        const dur=(s&&e&&!isNaN(s)&&!isNaN(e))?fmtDur(e-s):'—';
+        return '<tr><td class="small muted">'+esc(fmtTime(r.started_at))+'</td>'+
+          '<td class="small muted">'+esc(fmtTime(r.finished_at))+'</td>'+
+          '<td class="tbl-num">'+esc(dur)+'</td>'+
+          '<td class="tbl-num">'+esc(r.ok??'—')+'</td><td class="tbl-num">'+esc(r.already??'—')+'</td>'+
+          '<td class="tbl-num">'+esc(r.fail??'—')+'</td><td class="tbl-num">'+esc(r.skipped??'—')+'</td></tr>';
+      }).join(''):emptyRow(7,'暂无签到记录'));
+
+    // 豆包签到记录：优先读持久化历史（usage_checkin.jsonl，已被后端倒序）；
+    // 端点不可用时回退内存快照（每账号最新一条，重启即失）。
+    let dres=((c.doubao_log||{}).records)||[];
+    if(!dres.length)dres=(dbS.results)||[];
+    dres=dres.slice().sort((a,b)=>(b.ts||0)-(a.ts||0));
+    const stMap={ok:['成功','ok'],already:['已签','warn'],no_campaign:['无活动','warn'],error:['失败','bad']};
+    document.getElementById('task-checkin-db').innerHTML=
+      '<tr><th>账号</th><th>结果</th><th>奖励</th><th>连续天数</th><th>说明</th><th>时间</th></tr>'+
+      (dres.length?dres.map(r=>{
+        const m=stMap[r.status]||[r.status||'—','warn'];
+        return '<tr><td class="mono">'+esc(r.name||'—')+'</td>'+
+          '<td>'+badge(m[0],m[1])+'</td>'+
+          '<td>'+esc(r.reward||'—')+'</td>'+
+          '<td class="tbl-num">'+esc(r.days||'—')+'</td>'+
+          '<td class="small muted">'+esc(r.message||'—')+'</td>'+
+          '<td class="small muted">'+esc(fmtTS(r.ts))+'</td></tr>';
+      }).join(''):emptyRow(6,'本次运行还没有豆包签到结果'));
   }catch(e){toast(e.message,true);}
 }
 
@@ -483,7 +788,7 @@ async function askCheckinProvider(provider){
   if(!confirm('确认对「'+label+'」账号单独签到？\n\n只影响该 provider，已签到的账号幂等返回。'))return;
   try{const d=await post('/checkin/'+provider);
     if(d.ok){toast(label+' 签到成功');}else{toast(label+' 签到未成功：'+(d.err||'请查看详情'),true);}
-    loadCheckinState();}catch(e){toast(e.message,true);}
+    loadTasks();}catch(e){toast(e.message,true);}
 }
 
 async function askCheckin(){
@@ -492,7 +797,7 @@ async function askCheckin(){
   if(!confirm('确认立即签到？\n\n目标：WorkBuddy '+wb+' 个账号 + 豆包 '+db+' 个账号。\n已签到的账号会幂等返回。'))return;
   try{const d=await post('/checkin');
     toast('签到已执行：WorkBuddy '+(d.workbuddy?.ok?'成功':'失败')+' / 豆包 '+(d.doubao_ok?'成功':'不可用'));
-    loadCheckinState();}catch(e){toast(e.message,true);}
+    loadTasks();}catch(e){toast(e.message,true);}
 }
 
 document.getElementById('task-buttons').innerHTML=TASKS.map(([k,n])=>

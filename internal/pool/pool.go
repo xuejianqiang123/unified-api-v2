@@ -188,6 +188,17 @@ func (p *Pool) SetSelectionMode(mode string) {
 	p.priorityMode = strings.EqualFold(strings.TrimSpace(mode), "priority")
 }
 
+// SelectionMode 返回当前选号模式（"priority" / "weighted"），供面板展示与实际生效
+// 口径对齐——面板不能自己再存一份模式状态，否则重启后展示值与 pool 行为可能不一致。
+func (p *Pool) SelectionMode() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.priorityMode {
+		return "priority"
+	}
+	return "weighted"
+}
+
 // SetWeights 注入三因子加权的闲置补偿参数。非正值保留原值（用默认）。
 func (p *Pool) SetWeights(idlePerHour, idleMax float64) {
 	p.mu.Lock()

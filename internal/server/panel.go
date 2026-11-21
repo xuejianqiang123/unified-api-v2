@@ -8,6 +8,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	_ "embed"
 	"encoding/json"
 	"io"
@@ -21,6 +22,13 @@ import (
 //go:embed panelweb/index.html
 var panelIndexHTML []byte
 
+// panelBuildStamp 面板构建标识，注入到页面顶栏。
+//
+// 用途：面板反复出现「改了但页面还是旧样子」的沟通成本，根因往往是浏览器/客户端
+// 加载的是旧页面。顶栏显示构建号后，用户一眼就能判断是否已加载新版本；每次整改
+// 面板就递增一次 hi 标记（r28 = 第 28 轮）。
+const panelBuildStamp = "面板 r30 · 2026-11-21"
+
 func (h *Handler) panelRoot(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
@@ -28,7 +36,7 @@ func (h *Handler) panelRoot(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write(panelIndexHTML)
+	_, _ = w.Write(bytes.ReplaceAll(panelIndexHTML, []byte("{{PANEL_BUILD}}"), []byte(panelBuildStamp)))
 }
 
 // captureWriter 进程内 HTTP 调用的最小 ResponseWriter（不引入 httptest 到生产代码）。
@@ -59,6 +67,12 @@ func (c *captureWriter) Flush() {}
 
 // doubaoAdmin 进程内调用豆包 provider 的管理端点，返回解析后的 JSON 与 HTTP 状态。
 func (h *Handler) doubaoAdmin(method, path string, body []byte) (map[string]any, int) {
+	return h.doubaoAdminCtx(context.Background(), method, path, body)
+}
+
+// doubaoAdminCtx 同 doubaoAdmin，但允许调用方用 ctx 控制上游耗时。
+// 用于打上游外网的端点（如 /admin/quota 会请求豆包 commerce），避免面板被上游拖住。
+func (h *Handler) doubaoAdminCtx(ctx context.Context, method, path string, body []byte) (map[string]any, int) {
 	if h.cfg.DoubaoAdmin == nil {
 		return map[string]any{"error": "doubao provider 未启用"}, http.StatusServiceUnavailable
 	}
@@ -66,7 +80,7 @@ func (h *Handler) doubaoAdmin(method, path string, body []byte) (map[string]any,
 	if body != nil {
 		rd = bytes.NewReader(body)
 	}
-	req, err := http.NewRequest(method, "http://127.0.0.1"+path, rd)
+	req, err := http.NewRequestWithContext(ctx, method, "http://127.0.0.1"+path, rd)
 	if err != nil {
 		return map[string]any{"error": err.Error()}, http.StatusBadRequest
 	}
@@ -115,10 +129,12 @@ func (h *Handler) panelOverview(w http.ResponseWriter, _ *http.Request) {
 	panelJSON(w, http.StatusOK, map[string]any{
 		"service":         "unified-api-v2",
 		"aliases":         len(h.cfg.Aliases),
+		"selection_mode":  h.cfg.Pool.SelectionMode(),
 		"providers":       h.providerStatus(),
 		"workbuddy":       map[string]any{"total": total, "healthy": healthy, "cooling": cooling, "disabled": disabled, "manual_stopped": manualStopped, "needs_relogin": needsRelogin, "in_flight_full": inFlight, "ok": true},
 		"doubao":          map[string]any{"data": db, "ok": dbStatus == http.StatusOK},
 		"alias_breakdown": map[string]any{"auto": autoAliases, "single": singleAliases},
+		"provider_order":  h.providerOrderView(),
 		"checked_at":      time.Now().Unix(),
 	})
 }
@@ -257,9 +273,15 @@ func (h *Handler) panelCheckinGet(w http.ResponseWriter, _ *http.Request) {
 		next = h.cfg.CheckinSchedule.NextCheckinAt(time.Now())
 	}
 	db, dbStatus := h.doubaoAdmin(http.MethodGet, "/admin/checkin", nil)
+	// 豆包签到历史：内存快照（db.results）只留每账号最新一条且重启清零，
+	// 真正的历史在 usage_checkin.jsonl，由 /admin/checkin/log 倒序读出。
+	dbLog, dbLogStatus := h.doubaoAdmin(http.MethodGet, "/admin/checkin/log?limit=50", nil)
 	panelJSON(w, http.StatusOK, map[string]any{
-		"workbuddy": map[string]any{"next": next},
-		"doubao":    db, "doubao_ok": dbStatus == http.StatusOK,
+		"workbuddy":     map[string]any{"next": next},
+		"doubao":        db,
+		"doubao_ok":     dbStatus == http.StatusOK,
+		"doubao_log":    dbLog,
+		"doubao_log_ok": dbLogStatus == http.StatusOK,
 	})
 }
 
@@ -326,6 +348,118 @@ func (h *Handler) panelSettings(w http.ResponseWriter, r *http.Request) {
 		"admin":   h.cfg.AdminEnabled,
 		"metrics": h.cfg.MetricsEnabled,
 	})
+}
+
+// panelPoolMode 运行时切换选号模式（priority / weighted）。
+//
+// 只改内存中的 pool 行为，不回写 config.json：面板写配置文件会重排用户手写的
+// 字段与注释，且一旦写坏就没有备份可用——模式持久化仍由配置文件负责（页面已标注）。
+func (h *Handler) panelPoolMode(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Mode string `json:"mode"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "bad_json", "参数错误: "+err.Error())
+		return
+	}
+	mode := strings.ToLower(strings.TrimSpace(body.Mode))
+	if mode != "priority" && mode != "weighted" {
+		writeOpenAIError(w, http.StatusBadRequest, "bad_mode", `mode 只能是 "priority" 或 "weighted"`)
+		return
+	}
+	h.cfg.Pool.SetSelectionMode(mode)
+	panelJSON(w, http.StatusOK, map[string]any{
+		"mode":      h.cfg.Pool.SelectionMode(),
+		"persisted": false,
+		"note":      "本次运行生效；重启后按 config.json 的 pool.selection_mode 恢复",
+	})
+}
+
+// panelProviderOrder 读取/设置「自动路由的 Provider 优先序」。
+//
+// GET  → 当前生效顺序（含来源：override=运行时偏好文件 / config=别名配置原序）
+// POST → {"first":"doubao"|"workbuddy"}：把该侧排第一，另一侧排第二。
+//
+// 与 pool/mode 的差异：优先序落在数据目录的独立小文件（provider_order.json），
+// 重启后仍然生效；config.json 不动，避免重排用户手写的主配置。
+func (h *Handler) panelProviderOrder(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		panelJSON(w, http.StatusOK, h.providerOrderView())
+		return
+	}
+	var body struct {
+		First string   `json:"first"`
+		Order []string `json:"order"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "bad_json", "参数错误: "+err.Error())
+		return
+	}
+	order := body.Order
+	if len(order) == 0 {
+		first := strings.ToLower(strings.TrimSpace(body.First))
+		if first == "" {
+			writeOpenAIError(w, http.StatusBadRequest, "bad_request", `需要 first（"doubao" 或 "workbuddy"）或 order 数组`)
+			return
+		}
+		other := "workbuddy"
+		if first == "workbuddy" {
+			other = "doubao"
+		} else if first != "doubao" {
+			writeOpenAIError(w, http.StatusBadRequest, "bad_provider", `first 只能是 "doubao" 或 "workbuddy"`)
+			return
+		}
+		order = []string{first, other}
+	}
+	persisted, err := h.SetProviderOrder(order)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "bad_order", "优先序非法："+err.Error())
+		return
+	}
+	out := h.providerOrderView()
+	out["persisted"] = persisted
+	if !persisted {
+		out["note"] = "已在内存生效；未落盘（ProviderOrderFile 未配置），重启后按 config 恢复"
+	}
+	panelJSON(w, http.StatusOK, out)
+}
+
+// providerOrderView 输出当前优先序与来源，供概览页直接渲染控件。
+func (h *Handler) providerOrderView() map[string]any {
+	order := h.ProviderOrder()
+	effective := order
+	source := "override"
+	if len(effective) == 0 {
+		source = "config"
+		effective = h.configProviderOrder()
+	}
+	return map[string]any{
+		"order":     effective,
+		"source":    source,
+		"providers": []string{"doubao", "workbuddy"},
+	}
+}
+
+// configProviderOrder 取各自动路由别名里出现次数最多的候首次序（用于展示「当前配置
+// 决定的默认顺序」）。简化为出现最多的首候选：配置里所有公共别名应保持一致。
+func (h *Handler) configProviderOrder() []string {
+	counts := map[string]int{}
+	for _, a := range h.cfg.Aliases {
+		c := a.Candidates()
+		if len(c) > 0 {
+			counts[c[0]]++
+		}
+	}
+	out := make([]string, 0, len(counts))
+	for _, p := range []string{"doubao", "workbuddy"} {
+		if counts[p] > 0 {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return []string{"doubao", "workbuddy"}
+	}
+	return out
 }
 
 // panelTaskRun 手动触发 WorkBuddy 排程任务（六类白名单）。
@@ -404,10 +538,18 @@ func (h *Handler) panelAPI(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case p == "/overview" && method == http.MethodGet:
 		h.panelOverview(w, r)
+	case p == "/activity" && method == http.MethodGet:
+		h.panelActivity(w, r)
+	case p == "/pool/mode" && method == http.MethodPost:
+		h.panelPoolMode(w, r)
+	case p == "/provider-order" && (method == http.MethodGet || method == http.MethodPost):
+		h.panelProviderOrder(w, r)
 	case p == "/accounts" && method == http.MethodGet:
 		h.panelAccounts(w, r)
 	case p == "/pool" && method == http.MethodGet:
 		h.panelPool(w, r)
+	case p == "/quota" && method == http.MethodGet:
+		h.panelQuota(w, r)
 	case p == "/keys" && method == http.MethodGet:
 		h.panelKeys(w, r)
 	case p == "/models" && method == http.MethodGet:

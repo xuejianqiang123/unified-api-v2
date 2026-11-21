@@ -95,10 +95,13 @@ func New(cfg *config.Config) *Server {
 	s.mux.HandleFunc("GET /admin/status", s.withAuth(s.status))
 	s.mux.HandleFunc("POST /admin/checkin", s.withAuth(s.adminCheckin))
 	s.mux.HandleFunc("GET /admin/checkin", s.withAuth(s.adminCheckinStatus))
+	s.mux.HandleFunc("GET /admin/checkin/log", s.withAuth(s.adminCheckinLog))
 	s.mux.HandleFunc("GET /admin/keys", s.withAuth(s.adminListKeys))
 	s.mux.HandleFunc("POST /admin/keys", s.withAuth(s.adminCreateKey))
 	s.mux.HandleFunc("DELETE /admin/keys", s.withAuth(s.adminDeleteKey))
 	s.mux.HandleFunc("GET /admin/usage", s.withAuth(s.adminUsage))
+	// 最近请求记录（统一面板「实时使用」/「请求日志」数据源，loopback 专用）
+	s.mux.HandleFunc("GET /admin/activity", s.withAuth(s.adminActivity))
 	s.mux.HandleFunc("POST /admin/reload", s.withAuth(s.adminReload))
 	s.mux.HandleFunc("POST /admin/cookie", s.withAuth(s.adminSetCookie))
 	s.mux.HandleFunc("DELETE /admin/accounts", s.withAuth(s.adminDelete))
@@ -270,6 +273,17 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 
 		status, retry := s.forward(w, r, &req, body, acct, convKey, started)
+		// 请求记录：只记真正落到某个账号上的尝试（status==0 表示还没写响应就换号，
+		// 没有可展示的账号/状态）。面板「当前活跃账号/使用哪个模型」依赖这条。
+		if status != 0 {
+			recordDBActivity(dbActivityEntry{
+				At: time.Now(), Account: name, Model: modelKey,
+				ModelName: s.cfg.ModelLabel(modelKey),
+				Alias:     strings.TrimSpace(r.Header.Get("X-Unified-Alias")),
+				Status:    status, MS: time.Since(started).Milliseconds(),
+				Stream: req.Stream, Tokens: -1,
+			})
+		}
 		if status == 0 && retry {
 			continue
 		}
@@ -350,16 +364,61 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, req *doubao.Cha
 	}
 
 	if req.Stream {
-		return s.streamOut(w, r, resp.Body, convKey, acct.Name, req.Model, started)
+		// 把「关闭上游连接」的句柄交给 streamOut：客户端断开时要立刻断上游，
+		// 而不是等整个 forward 返回再 defer——延迟越短，上游越可能提前停止生成。
+		return s.streamOut(w, r, resp.Body, convKey, acct.Name, req.Model, started, func() {
+			cancel()
+			_ = resp.Body.Close()
+		})
 	}
 	return s.wholeOut(w, r, resp.Body, convKey, req, acct.Name, started)
 }
 
 // sink 把 SSE 事件转发到 channel。
+// ctx 非 nil 时发送带取消保护：下游已走（无人读 ch）时不会把 Pump goroutine
+// 永久卡在 send 上——这是「客户端断开后上游无法及时停止」的隐性原因之一。
 type sink struct {
 	ch     chan ev
+	ctx    context.Context
 	final  strings.Builder
 	reason strings.Builder
+
+	// errMu/err 记录 Pump 的失败原因（上游 RST / 连接中断 / 空闲断流）。
+	// 主循环在 ch 关闭后读它，用 close 保证的 happens-before 之外的互斥保护，
+	// 避免 -race 下的数据竞争。
+	errMu sync.Mutex
+	err   error
+}
+
+// setErr 只记录第一个错误：后续错误通常是前一个的连带结果。
+func (s *sink) setErr(err error) {
+	if err == nil {
+		return
+	}
+	s.errMu.Lock()
+	if s.err == nil {
+		s.err = err
+	}
+	s.errMu.Unlock()
+}
+
+// getErr 取上游中断原因；nil 表示正常收尾。
+func (s *sink) getErr() error {
+	s.errMu.Lock()
+	defer s.errMu.Unlock()
+	return s.err
+}
+
+// send 带 ctx 保护的事件投递。
+func (s *sink) send(e ev) {
+	if s.ctx == nil {
+		s.ch <- e
+		return
+	}
+	select {
+	case s.ch <- e:
+	case <-s.ctx.Done():
+	}
 }
 
 type ev struct {
@@ -378,15 +437,16 @@ const (
 	evFinish
 )
 
-func (s *sink) OnText(t string)              { s.final.WriteString(t); s.ch <- ev{kind: evText, text: t} }
-func (s *sink) OnReasoning(t string)         { s.reason.WriteString(t); s.ch <- ev{kind: evReason, text: t} }
-func (s *sink) OnConversation(c, sec string) { s.ch <- ev{kind: evConv, conv: c, section: sec} }
+func (s *sink) OnText(t string)              { s.final.WriteString(t); s.send(ev{kind: evText, text: t}) }
+func (s *sink) OnReasoning(t string)         { s.reason.WriteString(t); s.send(ev{kind: evReason, text: t}) }
+func (s *sink) OnConversation(c, sec string) { s.send(ev{kind: evConv, conv: c, section: sec}) }
 func (s *sink) OnFinish(endType int, brief string) {
-	s.ch <- ev{kind: evFinish, endType: endType, brief: brief}
+	s.send(ev{kind: evFinish, endType: endType, brief: brief})
 }
 
-// streamOut 流式输出。
-func (s *Server) streamOut(w http.ResponseWriter, r *http.Request, body io.Reader, convKey, acct, model string, started time.Time) (int, bool) {
+// streamOut 流式输出。cutUpstream 非 nil 时，客户端断开/写失败会立即调用它
+// （取消 ctx + 关闭上游 body），把「客户端已走」到「上游连接断开」的时延压到最小。
+func (s *Server) streamOut(w http.ResponseWriter, r *http.Request, body io.Reader, convKey, acct, model string, started time.Time, cutUpstream func()) (int, bool) {
 	hdr := w.Header()
 	hdr.Set("Content-Type", "text/event-stream")
 	hdr.Set("Cache-Control", "no-cache")
@@ -395,17 +455,15 @@ func (s *Server) streamOut(w http.ResponseWriter, r *http.Request, body io.Reade
 	fl, _ := w.(http.Flusher)
 	w.WriteHeader(http.StatusOK)
 
-	sk := &sink{ch: make(chan ev, 64)}
+	sk := &sink{ch: make(chan ev, 64), ctx: r.Context()}
 	go func() {
 		defer close(sk.ch)
 		if err := doubao.Pump(body, sk); err != nil && err != io.EOF {
-			// 下游仍在、错误却是 context.Canceled ⇒ 取消来自流中空闲断流
-			// （MonitorBody），与客户端离开区分开，否则日志里两种原因长得一样。
-			if r.Context().Err() == nil && errors.Is(err, context.Canceled) {
-				logf("upstream_idle_cut acct=%s err=%v", acct, err)
-				return
-			}
-			logf("pump_error acct=%s err=%v", acct, err)
+			// 只记录原因，日志与收尾判定交给主循环：
+			// 上游 RST 与空闲断流必须与「正常结束」区分，否则截断的响应会被
+			// 伪装成完整成功（2026-11-21 实测：17:20/17:45 两次
+			// stream error: INTERNAL_ERROR received from peer 均被记成 ok）。
+			sk.setErr(err)
 		}
 	}()
 
@@ -420,10 +478,19 @@ func (s *Server) streamOut(w http.ResponseWriter, r *http.Request, body io.Reade
 	for {
 		select {
 		case <-r.Context().Done():
+			// 客户端已断开：立刻断上游（不再等 forward 的 defer）。
+			if cutUpstream != nil {
+				cutUpstream()
+			}
 			logf("client_gone acct=%s elapsed=%s", acct, time.Since(started).Round(time.Millisecond))
 			return 0, false
 		case <-ticker.C:
 			if _, err := io.WriteString(w, ": ping\n\n"); err != nil {
+				if cutUpstream != nil {
+					cutUpstream()
+				}
+				// 写心跳失败 = 下游连接已废，同样要立刻断上游，否则上游继续烧额度。
+				logf("client_write_fail acct=%s elapsed=%s", acct, time.Since(started).Round(time.Millisecond))
 				return 0, false
 			}
 			if fl != nil {
@@ -431,16 +498,40 @@ func (s *Server) streamOut(w http.ResponseWriter, r *http.Request, body io.Reade
 			}
 		case e, ok := <-sk.ch:
 			if !ok {
-				// 收尾
+				// 收尾。必须区分「上游正常结束」与「上游中途断开（RST / 连接重置 /
+				// 空闲断流）」：后者若照样写 [DONE] 并记 ok，截断的响应就被伪装成
+				// 完整成功——这正是「网关这边已结束、豆包侧仍在生成」却无人察觉的成因。
+				upErr := sk.getErr()
+				finishReason = "stop"
+				if upErr != nil {
+					finishReason = "upstream_reset"
+				}
 				if !wrote && sk.final.Len() == 0 {
-					writeChunk(w, fl, id, created, map[string]any{"content": "(空响应)"}, nil)
+					msg := "(空响应)"
+					if upErr != nil {
+						msg = "(上游中断: " + truncate(upErr.Error(), 120) + ")"
+					}
+					writeChunk(w, fl, id, created, map[string]any{"content": msg}, nil)
 				}
 				writeChunk(w, fl, id, created, map[string]any{}, &finishReason)
 				_, _ = io.WriteString(w, "data: [DONE]\n\n")
 				if fl != nil {
 					fl.Flush()
 				}
-				logf("ok acct=%s stream=true latency=%s chars=%d", acct, time.Since(started).Round(time.Millisecond), sk.final.Len())
+				elapsed := time.Since(started).Round(time.Millisecond)
+				if upErr != nil {
+					// 空闲断流是我们主动 cancel（MonitorBody），上游重置是对端 RST，
+					// 两者处置不同，日志分开记。
+					if r.Context().Err() == nil && errors.Is(upErr, context.Canceled) {
+						logf("upstream_idle_cut acct=%s elapsed=%s chars=%d", acct, elapsed, sk.final.Len())
+					} else {
+						logf("upstream_reset acct=%s elapsed=%s chars=%d err=%v", acct, elapsed, sk.final.Len(), upErr)
+					}
+				} else {
+					logf("ok acct=%s stream=true latency=%s chars=%d", acct, elapsed, sk.final.Len())
+				}
+				// 状态仍记 200：HTTP 头早已发出，改不了状态码；截断事实由 finish_reason
+				// 与日志体现，客户端可据此重试。
 				s.recordUsage(apiKeyFrom(r.Context()), model, sk.final.Len(), http.StatusOK, int(time.Since(started)/time.Millisecond))
 				return http.StatusOK, false
 			}

@@ -112,6 +112,15 @@ func checkinJSONPath(stateFile string) string {
 	return filepath.Join(filepath.Dir(stateFile), "checkin.json")
 }
 
+// providerOrderJSONPath 由 state.json 路径推导 provider_order.json 路径（同目录同名换缀）：
+// 「自动路由的 Provider 优先序」是与 state 同级的运维偏好，独立存放、不写 config.json。
+func providerOrderJSONPath(stateFile string) string {
+	if stateFile == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(stateFile), "provider_order.json")
+}
+
 func main() {
 	cfgPath := flag.String("config", "config.json", "path to config json")
 	flag.Parse()
@@ -462,6 +471,9 @@ func main() {
 			return filepath.Join(filepath.Dir(exe), "login.exe")
 		}(),
 		DoubaoAccountsFile: cfg.Providers.Doubao.Accounts,
+		// Provider 路由优先序落盘：数据目录下独立小文件（与 state.json 同目录）。
+		// 空 StateFile 时留空 = 只在本进程生效。
+		ProviderOrderFile: providerOrderJSONPath(cfg.StateFile),
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

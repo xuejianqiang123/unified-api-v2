@@ -269,29 +269,50 @@ func (h *Handler) dispatchUnifiedAlias(w http.ResponseWriter, r *http.Request, b
 }
 
 // providerStatus 供 /status 展示两个 provider 的健康度；未接线时省略对应字段。
+//
+// aliases 的口径曾引起误解：公共模型由两侧共同提供，6 个公共别名会同时计入
+// 两个 provider，于是两栏都显示 8。这里额外给出 aliases_public / aliases_own，
+// 让「公共共享 6 + 各自独有 2」一目了然。
 func (h *Handler) providerStatus() map[string]any {
 	out := map[string]any{}
 	if len(h.cfg.Aliases) > 0 {
-		wbAliases, dbAliases := 0, 0
+		public, wbOwn, dbOwn := 0, 0, 0
 		for _, a := range h.cfg.Aliases {
+			hasWB, hasDB := false, false
 			for _, p := range a.Candidates() {
 				if p == "doubao" {
-					dbAliases++
+					hasDB = true
 				} else {
-					wbAliases++
+					hasWB = true
 				}
+			}
+			switch {
+			case hasWB && hasDB:
+				public++
+			case hasDB:
+				dbOwn++
+			default:
+				wbOwn++
 			}
 		}
 		wh, wt := 0, 0
 		if h.cfg.Pool != nil {
 			wt, wh, _, _, _ = h.cfg.Pool.CountsDetailed()
 		}
-		out["workbuddy"] = map[string]any{"aliases": wbAliases, "healthy": wh, "total": wt}
+		out["workbuddy"] = map[string]any{
+			"aliases": public + wbOwn, "aliases_public": public, "aliases_own": wbOwn,
+			"healthy": wh, "total": wt,
+		}
 		if h.cfg.DoubaoHealth != nil {
 			healthy, total := h.cfg.DoubaoHealth()
-			out["doubao"] = map[string]any{"aliases": dbAliases, "healthy": healthy, "total": total}
+			out["doubao"] = map[string]any{
+				"aliases": public + dbOwn, "aliases_public": public, "aliases_own": dbOwn,
+				"healthy": healthy, "total": total,
+			}
 		} else {
-			out["doubao"] = map[string]any{"aliases": dbAliases}
+			out["doubao"] = map[string]any{
+				"aliases": public + dbOwn, "aliases_public": public, "aliases_own": dbOwn,
+			}
 		}
 	}
 	return out
@@ -305,5 +326,34 @@ func (h *Handler) providerStatus() map[string]any {
 // 主 provider 不健康/失败时，由 Failover 逐个尝试下一个候选来处理，
 // 而不是提前把主 provider 换到最后。
 func (h *Handler) orderCandidates(cands []string) []string {
-	return cands
+	if len(cands) <= 1 {
+		return cands
+	}
+	pref := h.ProviderOrder()
+	if len(pref) == 0 {
+		return cands
+	}
+	// 按全局优先序重排：优先序里有的人按序前置，其余的保持候选原顺序补在末尾
+	// （缺省不丢候选——未知 provider 若被配置意外引入，仍会被尝试到）。
+	out := make([]string, 0, len(cands))
+	for _, p := range pref {
+		for _, c := range cands {
+			if c == p {
+				out = append(out, c)
+			}
+		}
+	}
+	for _, c := range cands {
+		found := false
+		for _, o := range out {
+			if o == c {
+				found = true
+				break
+			}
+		}
+		if !found {
+			out = append(out, c)
+		}
+	}
+	return out
 }

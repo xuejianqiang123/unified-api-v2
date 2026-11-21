@@ -153,6 +153,10 @@ type Config struct {
 	LoginBin string
 	// DoubaoAccountsFile 豆包 accounts.json 路径，供面板 Cookie 新增落盘；空则不落盘（仅内存）。
 	DoubaoAccountsFile string
+
+	// ProviderOrderFile 「Provider 路由优先序」落盘路径（数据目录下的小文件）。
+	// 空 = 不持久化，只在本进程生效；启动时若文件存在则覆盖 config 里别名的候选顺序。
+	ProviderOrderFile string
 }
 
 // CheckinResult 单账号签到结果（POST /v1/checkin 返回体的 results 元素）。
@@ -226,6 +230,10 @@ type Handler struct {
 	// 仅当直接手搓 &Handler{} 时才为 nil，此时 admit/add 都是直通。
 	budget *dailyBudget
 
+	// provOrder 自动路由的 Provider 优先序（providerorder.go）。nil = 未接线，
+	// orderCandidates 按别名自身候选顺序处理（与纯配置语义一致）。
+	provOrder *providerOrderPref
+
 	// lastCheckinUnix 上次手动签到**完成**时刻（unix 秒）。给 POST /v1/checkin 加一个
 	// 短冷却：一次签到会对每个账号打 2~3 次上游（refresh / daily-checkin / balance），
 	// 被脚本连点会成倍放大上游压力（含住宅代理出口的 WAF 风险）。进程内状态、重启清零。
@@ -251,6 +259,8 @@ func NewHandler(cfg Config) *Handler {
 		mux:         http.NewServeMux(),
 		taskRunning: map[string]bool{},
 		budget:      newDailyBudget(cfg.BudgetLimit),
+		// 启动即加载优先序：文件存在则覆盖别名的候选顺序，缺失/损坏回落 nil（按配置原序）。
+		provOrder: &providerOrderPref{path: cfg.ProviderOrderFile, order: loadProviderOrder(cfg.ProviderOrderFile)},
 	}
 	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
 	h.mux.HandleFunc("GET /v1/models", h.withAuth(h.models))
@@ -862,6 +872,15 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// 请求级统计：出口即打一行表格日志（任何路径都会走到）。
 	st := newChatStat(time.Now(), body, peek.Stream, h.budget)
+	// 面板用：客户端请求的是别名时记下来，并同时把 model 换成**上游真实模型名**，
+	// 这样「请求日志 / 按模型汇总」展示的是「别名 → 实际模型」，而不是两条都写别名。
+	// 代价：metrics 的模型维度从「客户端别名」转为「上游真名」，正是运维要看的口径。
+	if a, ok := h.cfg.Aliases[requestedModel]; ok {
+		st.alias = requestedModel
+		if a.Model != "" {
+			st.model = a.Model
+		}
+	}
 	defer st.done()
 
 	tried := map[string]bool{}
