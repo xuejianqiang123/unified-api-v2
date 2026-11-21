@@ -1,0 +1,12 @@
+{
+  "accounts": [
+    {
+      "name": "main",
+      "cookie": "sessionid=REPLACE_ME; sid_tt=REPLACE_ME; ttwid=REPLACE_ME; s_v_web_id=REPLACE_ME; odin_tt=REPLACE_ME; passport_csrf_token=REPLACE_ME",
+      "device_id": "REPLACE_DEVICE_ID",
+      "web_id": "REPLACE_WEB_ID",
+      "local_app_id": "582478",
+      "note": "豆包账号 1（登录 doubao.com 后从浏览器 Cookie 中复制完整串）"
+    }
+  ]
+}
