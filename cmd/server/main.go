@@ -11,11 +11,13 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 
 	"unified-api-v2/internal/alert"
 	"unified-api-v2/internal/auth"
+	codeartspkg "unified-api-v2/internal/codearts"
 	"unified-api-v2/internal/dbconfig"
 	"unified-api-v2/internal/dbserver"
 	"unified-api-v2/internal/pool"
@@ -258,6 +260,65 @@ func runServer() {
 	if scheduleSeed == "" {
 		scheduleSeed = cfg.AuthDir
 	}
+	// CodeArts：进程内 provider，凭据为华为 STS 四件套 + DPoP 私钥。
+	// 凭据缺失不阻止启动（别名校验只要求名字合法），请求时回 503 并说明缺什么。
+	var codeArtsProvider *server.CodeArtsProvider
+	codeArtsCredPath := "codearts/accounts.json"
+	if cfg.Providers.CodeArts.Enabled {
+		credPath := cfg.Providers.CodeArts.Accounts
+		if credPath == "" {
+			credPath = "codearts/accounts.json"
+		}
+		codeArtsCredPath = credPath
+		codeArtsProvider = server.NewCodeArtsProvider(credPath)
+		log.Printf("codearts provider 已接线（凭据 %s）", credPath)
+	}
+
+	// CodeArts 凭据自愈：STS 剩余不足 2 小时就从 IDE 重读一次。
+	//
+	// 前提是 IDE 自己在续期（它确实会，实测 14:29 → 16:24）；IDE 没开时刷新会失败，
+	// 此时**保留旧凭据**而不是清空 —— 还能用的东西不该因为刷新失败被丢掉。
+	if codeArtsProvider != nil {
+		go func() {
+			t := time.NewTicker(30 * time.Minute)
+			defer t.Stop()
+			for range t.C {
+				cli := codeArtsProvider.Client()
+				if !cli.NeedsIDERefresh() {
+					continue
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				var rerr error
+				if cfg.Providers.CodeArts.Takeover {
+					// 接管模式：网关自己用 refresh_token 换票（IDE 那份随之失效）。
+					rerr = cli.RefreshOwn(ctx)
+				} else {
+					// 只读模式：从 IDE 已续好的凭据里抄一份。
+					rerr = cli.RefreshFromIDE()
+				}
+				cancel()
+				if rerr != nil {
+					log.Printf("codearts 凭据自愈失败（保留旧凭据）: %v", rerr)
+					continue
+				}
+				log.Printf("codearts 凭据已自动刷新（takeover=%v）", cfg.Providers.CodeArts.Takeover)
+			}
+		}()
+	}
+
+	// CodeArts 签到的唯一出口：scheduler 的自动排程与面板的「立即签到」都调它，
+	// 两条路径同一份判定（避免面板说已领、排程说失败）。
+	codeArtsCheckin := func(ctx context.Context) (kind string, credit int64, message string, err error) {
+		if codeArtsProvider == nil {
+			return string(codeartspkg.ClaimFailed), 0, "codearts 未接线", nil
+		}
+		res, cerr := codeArtsProvider.Client().ClaimDailyCheckin(ctx)
+		if cerr != nil {
+			return string(codeartspkg.ClaimFailed), 0, cerr.Error(), cerr
+		}
+		return string(res.Kind), res.Credit, res.Message, nil
+	}
+
 	sch := scheduler.New(scheduler.Config{
 		Pool:                p,
 		Upstream:            up,
@@ -278,6 +339,41 @@ func runServer() {
 		RandomDelayMinutes:     cfg.Schedule.RandomDelayMinutes,
 		RandomDelaySeed:        scheduleSeed,
 		ExpiringSoonWindow:     cfg.ExpiringSoonDur, // 快过期积分优先消耗（issue:积分过期）
+		// CodeArts 签到：作为额外签到源接在 workbuddy 之后，独立失败不影响其他家。
+		// 闭包捕获变量而非值：codeArtsProvider 就在上面构造，这里读的是同一个指针。
+		ExtraCheckins: []func(context.Context) ([]scheduler.CheckinOutcome, error){
+			func(ctx context.Context) ([]scheduler.CheckinOutcome, error) {
+				if codeArtsProvider == nil {
+					return nil, nil
+				}
+				name := codeArtsProvider.AccountName()
+				if name == "" {
+					name = "unknown"
+				}
+				kind, credit, msg, cerr := codeArtsCheckin(ctx)
+				oc := scheduler.CheckinOutcome{UID: "codearts:" + name, Nickname: name}
+				switch kind {
+				case string(codeartspkg.ClaimClaimed):
+					oc.Status = scheduler.CheckinOK
+					if credit > 0 {
+						c := credit
+						oc.Credits = &c
+					}
+				case string(codeartspkg.ClaimAlready):
+					oc.Status = scheduler.CheckinAlready
+				case string(codeartspkg.ClaimInactive):
+					oc.Status = scheduler.CheckinSkipped
+					oc.Detail = msg
+				default:
+					oc.Status = scheduler.CheckinFail
+					oc.Detail = msg
+					if cerr != nil {
+						oc.Detail = "签到失败: " + cerr.Error()
+					}
+				}
+				return []scheduler.CheckinOutcome{oc}, nil
+			},
+		},
 		// 任务执行台账与当日失败重试（schedule.ledger_file / retry_*）。
 		// 重试默认关闭（RetryDelayMinutes=0），台账恒在（纯内存，除非给了落盘路径）。
 		LedgerFile:        cfg.Schedule.LedgerFile,
@@ -413,6 +509,12 @@ func runServer() {
 	log.Printf("loomy provider 已接线（会话存储 loomy/conversations.json，已有 %d 条）",
 		loomyProvider.Conversations().Len())
 
+	// codeArtsChat 为 nil 时 unified 分支回 503 并提示未接线。
+	var codeArtsChat func(http.ResponseWriter, *http.Request)
+	if codeArtsProvider != nil {
+		codeArtsChat = codeArtsProvider.Chat
+	}
+
 	// 别名启动期校验：拼错的 provider / 空 model 在启动时就暴露，不留到运行期。
 	// 多候选别名（providers 数组）逐个校验；无候选视为配置错误。
 	for name, a := range cfg.Aliases {
@@ -436,8 +538,13 @@ func runServer() {
 				if loomyProvider == nil {
 					log.Fatalf("别名 %q 指向 loomy，但 loomy provider 未初始化", name)
 				}
+			case "codearts":
+				// 同上：凭据缺失/过期不阻止启动，请求时回 503 并说明缺什么。
+				if codeArtsProvider == nil {
+					log.Fatalf("别名 %q 指向 codearts，但 providers.codearts.enabled 未开启", name)
+				}
 			default:
-				log.Fatalf("别名 %q 的 provider %q 未知（仅支持 workbuddy / doubao / trae / loomy）", name, p)
+				log.Fatalf("别名 %q 的 provider %q 未知（仅支持 workbuddy / doubao / trae / loomy / codearts）", name, p)
 			}
 		}
 		if a.Model == "" {
@@ -493,7 +600,72 @@ func runServer() {
 		TraeChat:  traeChat,
 		TraeAdmin: traeAdmin,
 		// Loomy：进程内 provider，凭证来自 loomy/accounts.json。
-		LoomyChat:    loomyProvider.Chat,
+		LoomyChat:       loomyProvider.Chat,
+		CodeArtsChat:    codeArtsChat,
+		CodeArtsCheckin: codeArtsCheckin,
+		// Web 登录的回调端口：用网关自己的端口，授权页的 port 参数必须与之一致。
+		TraeBaseURL:       cfg.Providers.Trae.BaseURL,
+		CodeArtsLoginPort: codeArtsLoginPort(cfg.Listen),
+		CodeArtsExchange: func(ctx context.Context, code, verifier string, port int, jwk *codeartspkg.DpopJWK) (string, string, error) {
+			if codeArtsProvider == nil {
+				return "", "", errors.New("codearts 未接线")
+			}
+			cred, err := codeArtsProvider.Client().ExchangeCode(ctx, code, verifier, port, jwk)
+			if err != nil {
+				return "", "", err
+			}
+			if err := codeartspkg.SaveCredential(codeArtsCredPath, cred); err != nil {
+				return "", "", err
+			}
+			return cred.Name, cred.ExpiresAt, nil
+		},
+		CodeArtsImport: func(ctx context.Context) (string, string, error) {
+			if codeArtsProvider == nil {
+				return "", "", errors.New("codearts 未接线")
+			}
+			cli := codeArtsProvider.Client()
+			cur, _ := cli.Credential()
+			ide, err := codeartspkg.ImportFromIDE()
+			if err != nil {
+				return "", "", err
+			}
+			// 接管模式下 IDE 那份可能已经失效：只接受**比当前更新**的凭据，
+			// 避免误点「导入」把能用的换成一具尸体。
+			if cur.ExpiresAt != "" && ide.ExpiresAt != "" && ide.ExpiresAt <= cur.ExpiresAt {
+				return "", "", errors.New("IDE 里的凭据不比当前新，已拒绝覆盖（接管模式下 IDE 可能已失效）")
+			}
+			if err := codeartspkg.SaveCredential(codeArtsCredPath, ide); err != nil {
+				return "", "", err
+			}
+			cred, _ := cli.Credential()
+			return cred.Name, cred.ExpiresAt, nil
+		},
+		CodeArtsHealth: func() (int, int) {
+			if codeArtsProvider == nil {
+				return 0, 0
+			}
+			cred, cerr := codeArtsProvider.Client().Credential()
+			if cerr != nil || !cred.HasSTS() {
+				return 0, 1
+			}
+			if cred.ExpiresAt != "" {
+				if t, perr := time.Parse(time.RFC3339, cred.ExpiresAt); perr == nil && time.Now().After(t) {
+					return 0, 1
+				}
+			}
+			return 1, 1
+		},
+		CodeArtsPanel: func(ctx context.Context) server.CodeArtsPanelInfo {
+			if codeArtsProvider == nil {
+				return server.CodeArtsPanelInfo{Err: errors.New("codearts 未接线")}
+			}
+			info := server.CodeArtsPanelInfo{Name: codeArtsProvider.AccountName()}
+			if cred, cerr := codeArtsProvider.Client().Credential(); cerr == nil {
+				info.ExpiresAt = cred.ExpiresAt
+			}
+			info.Quota, info.Err = codeArtsProvider.Client().Quota(ctx)
+			return info
+		},
 		PanelEnabled: cfg.Panel.Enabled,
 		PanelAuth:    cfg.Panel.Auth,
 		// 面板账号新增所需路径：凭证目录、OAuth 登录程序、豆包账号文件。
@@ -501,17 +673,30 @@ func runServer() {
 		// "当前目录解析"有安全限制（ErrDot），实测 "login.exe" 直接 exec 失败。
 		AuthDir: cfg.AuthDir,
 		LoginBin: func() string {
+			// 与主程序同目录；扩展名按平台取，否则 Linux/macOS/Docker 里
+			// 编译出的 `login` 永远不会被找到（面板 OAuth 报 oauth_unavailable）。
+			name := "login"
+			if runtime.GOOS == "windows" {
+				name = "login.exe"
+			}
 			exe, err := os.Executable()
 			if err != nil {
-				return "login.exe"
+				return name
 			}
-			return filepath.Join(filepath.Dir(exe), "login.exe")
+			return filepath.Join(filepath.Dir(exe), name)
 		}(),
 		DoubaoAccountsFile: cfg.Providers.Doubao.Accounts,
 		// Provider 路由优先序落盘：数据目录下独立小文件（与 state.json 同目录）。
 		// 空 StateFile 时留空 = 只在本进程生效。
 		ProviderOrderFile: providerOrderJSONPath(cfg.StateFile),
 	})
+	// trae 的上下文能力来自它自己的 /v1/models（2026-11-22 起带 context_window）。
+	if cfg.Providers.Trae.Enabled {
+		loadTraeCapabilities(cfg.Providers.Trae.BaseURL)
+	}
+
+	// 配置热载：别名改完不用重启（listen/providers/api_key 仍要求重启）。
+	watchConfig(h, *cfgPath, *cfg)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -577,6 +762,20 @@ func runServer() {
 			cfg.Global.ChatBase, cfg.Global.BillingBase)
 	} else {
 		log.Printf("global realm 已禁用（config global.enabled=false，纯 CN）")
+	}
+	// 落盘路径清单：备份/迁移/排查时先看这两行，不用在多个目录里猜。
+	// 路径有一部分由各 provider 内部决定，这里只**展示**，不改变行为。
+	{
+		dir := filepath.Dir(cfg.StateFile)
+		log.Printf("落盘路径：config=%s | state=%s | model=%s | checkin=%s | provorder=%s | usage=%s",
+			*cfgPath, cfg.StateFile,
+			filepath.Join(dir, "model.json"),
+			filepath.Join(dir, "checkin.json"),
+			filepath.Join(dir, "provider_order.json"),
+			filepath.Join(dir, "usage.json"))
+		log.Printf("凭据路径：keys=keys.json | codearts=codearts/accounts.json | loomy=loomy/accounts.json | trae=trae/data/accounts.json | doubao=doubao2api/config.json")
+		// 权限自检：非 Windows 上「同机其他用户可读」是真问题；Windows 只跳过。
+		checkSecretPerms([]string{*cfgPath, "keys.json", "codearts/accounts.json", "loomy/accounts.json", "trae/data/accounts.json"})
 	}
 	log.Printf("unified-api-v2 listening on %s (api_key=%v, aliases=%d)", cfg.Listen, cfg.APIKey != "", len(cfg.Aliases))
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

@@ -10,7 +10,8 @@ import (
 	"unified-api-v2/internal/pool"
 )
 
-func panelFakeDoubao() http.HandlerFunc {	return func(w http.ResponseWriter, r *http.Request) {
+func panelFakeDoubao() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/admin/status":

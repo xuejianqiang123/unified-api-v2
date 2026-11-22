@@ -1,6 +1,6 @@
 {
-  "listen": ":7863",
-  "api_key": "test_key",
+  "listen": ":8900",
+  "api_key": "sk-CHANGE_ME_BEFORE_START",
   "auth_dir": "./auths",
   "state_file": "./data/state.json",
   "cooldown": {
@@ -137,10 +137,20 @@
       "enabled": false,
       "config": "./doubao2api/config.json",
       "accounts": "./doubao2api/accounts.json"
+    },
+    "trae": {
+      "enabled": false,
+      "base_url": "http://127.0.0.1:8000",
+      "api_key": ""
+    },
+    "codearts": {
+      "enabled": false,
+      "accounts": "codearts/accounts.json",
+      "takeover": false
     }
   },
   "panel": {
-    "enabled": false,
+    "enabled": true,
     "auth": "admin:CHANGE_ME_BEFORE_START"
   }
 }

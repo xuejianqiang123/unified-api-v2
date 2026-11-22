@@ -13,12 +13,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+
+	"unified-api-v2/internal/providercap"
 )
 
 // sseModelRE 匹配 SSE data 帧里的 "model":"..." 字段（只改这一处）。
@@ -93,6 +95,25 @@ type UnifiedAlias struct {
 	Model         string `json:"model"`
 	Name          string `json:"name,omitempty"`
 	ContextLength int    `json:"context_length,omitempty"`
+	// Require 声明的能力下限：不满足的候选在分发前被跳过。
+	//
+	// 为什么需要：同名模型跨家能力不等价（实测 glm-5.3 在 doubao 是 300K、
+	// 在 workbuddy 是 1M、codearts 是 1.048M）。一个长对话在主家正常，切到小窗口
+	// 那家直接 400 —— 用户看到的是「换个家就崩」。声明下限后，这种候选在切之前
+	// 就被跳过，而不是等上游报错。
+	Require *AliasRequire `json:"require,omitempty"`
+	// ModelByProvider 记录「某家该用哪个模型名」。归并大小写/前缀变体后，
+	// 各家叫法可能不同（loomy 的 GLM-5.3-Flash vs doubao 的 glm-5.3-flash），
+	// 必须逐家取，不能共用 Model。空表时回落到 Model。
+	ModelByProvider map[string]string `json:"model_by_provider,omitempty"`
+}
+
+// AliasRequire 是别名的能力下限声明。零值字段表示不限制。
+type AliasRequire struct {
+	// Context 需要的上下文窗口（token）。候选的实际窗口小于它时跳过。
+	Context int64 `json:"context,omitempty"`
+	// Images 需要图片输入能力。候选明确不支持时跳过（未知不阻断）。
+	Images *bool `json:"images,omitempty"`
 }
 
 // Candidates 返回该别名的 provider 候选列表（去重、去空、保序）。
@@ -135,8 +156,8 @@ func rewriteModelInBody(body []byte, model string) ([]byte, error) {
 
 // aliasNames 返回排序后的别名列表，供错误提示与 /v1/models 使用（稳定输出）。
 func (h *Handler) aliasNames() []string {
-	names := make([]string, 0, len(h.cfg.Aliases))
-	for n := range h.cfg.Aliases {
+	names := make([]string, 0, len(h.Aliases()))
+	for n := range h.Aliases() {
 		names = append(names, n)
 	}
 	sort.Strings(names)
@@ -148,7 +169,7 @@ func (h *Handler) aliasModelList() []map[string]any {
 	names := h.aliasNames()
 	data := make([]map[string]any, 0, len(names))
 	for _, n := range names {
-		a := h.cfg.Aliases[n]
+		a := h.Aliases()[n]
 		item := map[string]any{
 			"id":       n,
 			"object":   "model",
@@ -174,7 +195,7 @@ func (h *Handler) aliasModelList() []map[string]any {
 //   - model      ：分发后实际使用的模型名（供后续 realm 解析 / 选号 / 账本）
 func (h *Handler) dispatchUnifiedAlias(w http.ResponseWriter, r *http.Request, body []byte, model string) (newBody []byte, handled bool, effectiveModel string) {
 	newBody, effectiveModel = body, model
-	if len(h.cfg.Aliases) == 0 {
+	if len(h.Aliases()) == 0 {
 		return
 	}
 	// 内部递归（故障转移调用 workbuddy 原流程）已解析过别名，跳过分发防止死循环。
@@ -182,22 +203,34 @@ func (h *Handler) dispatchUnifiedAlias(w http.ResponseWriter, r *http.Request, b
 		return
 	}
 
-	alias, ok := h.cfg.Aliases[model]
+	alias, ok := h.Aliases()[model]
+	if !ok {
+		// 隐式解析：CodeArts 有 12 个模型，若每个都要客户端记住 codearts- 前缀，
+		// 等于把 provider 细节泄漏给调用方。这里在精确未命中时再试
+		// "<provider>-<model>" 形式 —— 只匹配**已注册**的别名，所以拼错仍会
+		// 得到明确的 unknown_model，不会静默落到某个 provider 上。
+		if key, resolved, hit := h.resolveProviderPrefixed(model); hit {
+			alias, ok = resolved, true
+			log.Printf("模型 %q 未注册，按前缀解析为别名 %q", model, key)
+		}
+	}
 	if !ok {
 		writeOpenAIError(w, http.StatusBadRequest, "unknown_model",
-			fmt.Sprintf("未注册的模型别名 %q；可用别名: %v", model, h.aliasNames()))
+			fmt.Sprintf("未注册的模型别名 %q；可用别名: %v"+
+				"（也可直接用上游模型名，如 glm-5.3 / kimi-k3.1-pro，网关会自动映射到对应 provider 的别名）",
+				model, h.aliasNames()))
 		return newBody, true, model
 	}
 
 	// 多候选 + 故障转移：按配置顺序依次尝试，首字节前可切、首字节后透传。
 	// 用 streamCaptureWriter 实现实时流式：2xx 首字节立即推给客户端并锁定 provider；
 	// 4xx/5xx 不提交，攒着等切下一候选；全失败回最后一个错误。
-	cands := alias.Candidates()
+	cands := h.filterByRequire(alias.Candidates(), alias)
 	if alias.Failover && len(cands) > 1 {
 		ordered := h.orderCandidates(cands)
 		var last *streamCaptureWriter
 		for _, p := range ordered {
-			rewritten, err := rewriteModelInBody(body, alias.Model)
+			rewritten, err := rewriteModelInBody(body, alias.ModelFor(p))
 			if err != nil {
 				writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "重写模型名失败: "+err.Error())
 				return newBody, true, model
@@ -210,8 +243,20 @@ func (h *Handler) dispatchUnifiedAlias(w http.ResponseWriter, r *http.Request, b
 					// 理论上 2xx 会触发 commit；兜底回放（如 mock 只 WriteHeader 无 body）。
 					cap.fallbackReplay()
 				}
+				// token 用量统一在这里记：覆盖所有 provider（doubao/codearts/loomy
+				// 的响应不进 activity 埋点，只有这条路能拿到 usage）。
+				usageGlobal.addTokens(cap.UsageTokens())
 				return newBody, true, model
 			}
+			// 分类决定要不要继续切：请求本身有问题（参数错/内容拒答）换到哪家
+			// 都一样，继续切只会白跑候选、拖慢响应、还可能触发风控。
+			cls := cap.failClass()
+			if !cls.Retryable() {
+				log.Printf("failover 停止：provider=%s class=%s（%s，换家无用）", p, cls, cls.explain())
+				cap.fallbackReplay()
+				return newBody, true, model
+			}
+			log.Printf("failover：provider=%s class=%s（%s）→ 尝试下一候选", p, cls, cls.explain())
 		}
 		if last != nil {
 			last.fallbackReplay()
@@ -221,93 +266,121 @@ func (h *Handler) dispatchUnifiedAlias(w http.ResponseWriter, r *http.Request, b
 		return newBody, true, model
 	}
 
-	// 单 provider（旧路径，零回归）：仅当显式声明了多个候选但未开 Failover 时按健康选第一个。
-	if len(cands) > 1 {
+	// 单 provider（旧路径，零回归）：从候选里定一个。
+	//
+	// ⚠️ 必须用 `len(cands) > 0` 而不是 `> 1`：别名用 Providers 数组声明时
+	// alias.Provider 是空串，若候选恰好只剩 1 个（例如被 require 过滤后），
+	// 条件不成立 ⇒ name 回落到 "workbuddy" ⇒ 请求被静默发给错的一家。
+	// 实测这条路径让「require 只留 codearts」变成了「实际调用 workbuddy」。
+	if len(cands) > 0 {
 		ordered := h.orderCandidates(cands)
 		alias.Provider = ordered[0]
 	}
 
-	switch alias.Provider {
-	case "doubao":
-		if h.cfg.DoubaoChat == nil {
-			writeOpenAIError(w, http.StatusServiceUnavailable, "provider_unavailable",
-				"doubao provider 未接线：检查 providers.doubao.enabled 与启动日志")
-			return newBody, true, model
+	// 查注册表：怎么调用由 ProviderEntry 描述，不再在这里逐家 switch。
+	name := alias.Provider
+	if name == "" {
+		name = "workbuddy"
+	}
+	e := h.provider(name)
+	if e == nil || e.Chat == nil {
+		msg := fmt.Sprintf("provider %q 未接线", name)
+		if e != nil && e.Reason != "" {
+			msg += "：" + e.Reason
 		}
-		rewritten, err := rewriteModelInBody(body, alias.Model)
-		if err != nil {
-			writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "重写模型名失败: "+err.Error())
-			return newBody, true, model
-		}
-		// 进程内调用：克隆请求并替换 body，跳过 doubao 自己那套 api key 鉴权
-		// （鉴权已由统一入口 withAuth 完成），避免两套密钥体系互相打架。
-		r2 := r.Clone(r.Context())
-		r2.Body = io.NopCloser(bytes.NewReader(rewritten))
-		r2.ContentLength = int64(len(rewritten))
-		// 让 provider 在响应里回显别名而不是上游真名（dbserver 读此头）。
-		r2.Header = r.Header.Clone()
-		r2.Header.Set("X-Unified-Alias", model)
-		// 稳定会话标识：dbserver 据此复用同一个豆包会话，而不是按消息内容
-		// 每轮新建（见 session_id.go）。
-		r2.Header.Set(HeaderSessionID, doubaoSessionID(r))
-		h.cfg.DoubaoChat(w, r2)
+		writeOpenAIError(w, http.StatusServiceUnavailable, "provider_unavailable", msg)
 		return newBody, true, model
-
-	case "trae":
-		// 单 provider 路径与大统一路径（callProvider）是两段独立分发，
-		// 新增 provider 时两处都要接——漏一处只会在这条路径上报 501。
-		if h.cfg.TraeChat == nil {
-			writeOpenAIError(w, http.StatusServiceUnavailable, "provider_unavailable",
-				"trae provider 未接线：检查 providers.trae.enabled 与 Trae2api 是否在线")
-			return newBody, true, model
-		}
-		rewritten, err := rewriteModelInBody(body, alias.Model)
-		if err != nil {
-			writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "重写模型名失败: "+err.Error())
-			return newBody, true, model
-		}
-		r2 := r.Clone(r.Context())
-		r2.Body = io.NopCloser(bytes.NewReader(rewritten))
-		r2.ContentLength = int64(len(rewritten))
-		r2.Header = r.Header.Clone()
-		r2.Header.Set("X-Unified-Alias", model)
-		h.cfg.TraeChat(w, r2)
-		return newBody, true, model
-
-	case "loomy":
-		if h.cfg.LoomyChat == nil {
-			writeOpenAIError(w, http.StatusServiceUnavailable, "provider_unavailable",
-				"loomy provider 未接线：检查启动日志与 loomy/accounts.json")
-			return newBody, true, model
-		}
-		rewritten, err := rewriteModelInBody(body, alias.Model)
-		if err != nil {
-			writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "重写模型名失败: "+err.Error())
-			return newBody, true, model
-		}
-		r2 := r.Clone(r.Context())
-		r2.Body = io.NopCloser(bytes.NewReader(rewritten))
-		r2.ContentLength = int64(len(rewritten))
-		r2.Header = r.Header.Clone()
-		r2.Header.Set("X-Unified-Alias", model)
-		// 会话键：loomy 要按会话复用 conversationId，与豆包同源。
-		r2.Header.Set(HeaderSessionID, doubaoSessionID(r))
-		h.cfg.LoomyChat(w, r2)
-		return newBody, true, model
-
-	case "workbuddy", "":
-		rewritten, err := rewriteModelInBody(body, alias.Model)
+	}
+	// workbuddy 走网关自己的原生路径（由上层继续处理），不在这里转发。
+	if e.Bypass {
+		rewritten, err := rewriteModelInBody(body, alias.ModelFor(name))
 		if err != nil {
 			writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "重写模型名失败: "+err.Error())
 			return newBody, true, model
 		}
 		return rewritten, false, alias.Model
-
-	default:
-		writeOpenAIError(w, http.StatusNotImplemented, "provider_unavailable",
-			fmt.Sprintf("provider %q 尚未接入统一网关", alias.Provider))
+	}
+	rewritten, err := rewriteModelInBody(body, alias.ModelFor(name))
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "重写模型名失败: "+err.Error())
 		return newBody, true, model
 	}
+	// 走同一条捕获层：单 provider 不切换，但仍需要它做**响应改写**
+	// （把上游真名换回别名）与非流式空壳判定。直接写 w 会绕过这两件事，
+	// 表现为「客户端看到的是上游模型名」。
+	cap := newStreamCaptureWriter(w, model)
+	h.invokeProvider(r.Context(), cap, r, e, rewritten, model)
+	if !cap.committed {
+		cap.fallbackReplay()
+	}
+	return newBody, true, model
+}
+
+// filterByRequire 按别名声明的能力下限过滤候选。
+//
+// 三条纪律：
+//  1. **未知不阻断** —— 查不到能力数据的 provider（如 loomy）必须放行，
+//     否则「还没测」会被当成「不能用」；
+//  2. **全被跳过时回退原候选** —— 宁可按错顺序试一遍，也不要让用户没有候选；
+//  3. **跳过要留日志** —— 否则用户只会看到「候选少了一个」而不知道为什么。
+func (h *Handler) filterByRequire(cands []string, alias UnifiedAlias) []string {
+	if alias.Require == nil || len(cands) <= 1 {
+		return cands
+	}
+	out := make([]string, 0, len(cands))
+	for _, p := range cands {
+		c, ok := providercap.Lookup(p, alias.ModelFor(p))
+		if !ok || !c.HasContext() {
+			// 能力未知：不阻断（仅图片声明可能仍然可判）。
+			if alias.Require.Images != nil && *alias.Require.Images && c.ImagesKnown && !c.Images {
+				log.Printf("候选 %s 被跳过：%s 不支持图片输入（来源 %s）", p, alias.Model, c.Source)
+				continue
+			}
+			out = append(out, p)
+			continue
+		}
+		if alias.Require.Context > 0 && c.Context < alias.Require.Context {
+			log.Printf("候选 %s 被跳过：%s 窗口 %d < 需要 %d（来源 %s）",
+				p, alias.Model, c.Context, alias.Require.Context, c.Source)
+			continue
+		}
+		if alias.Require.Images != nil && *alias.Require.Images && c.ImagesKnown && !c.Images {
+			log.Printf("候选 %s 被跳过：%s 不支持图片输入（来源 %s）", p, alias.Model, c.Source)
+			continue
+		}
+		out = append(out, p)
+	}
+	if len(out) == 0 {
+		log.Printf("别名 %q 的能力下限把所有候选都过滤掉了，回退为原候选", alias.Model)
+		return cands
+	}
+	return out
+}
+
+// resolveProviderPrefixed 在精确未命中时，尝试把 "provider-model" 形式的已有别名
+// 当作 requested 的宿主。
+//
+// 只接受「单 provider 且正好是 p」的别名：多候选别名（如 glm-5.3 的自动路由）
+// 不参与，否则用户写 glm-5.3 会先命中 workbuddy-glm-5.3（若存在）而绕过自动路由。
+//
+// 匹配按 enabledProviders 的顺序，顺序即优先级；因此同名模型在多家都有时，
+// 先接线的那家获胜 —— 这也是唯一可预测的规则。
+func (h *Handler) resolveProviderPrefixed(requested string) (string, UnifiedAlias, bool) {
+	if requested == "" {
+		return "", UnifiedAlias{}, false
+	}
+	for _, p := range h.enabledProviders() {
+		key := p + "-" + requested
+		a, ok := h.Aliases()[key]
+		if !ok {
+			continue
+		}
+		cands := a.Candidates()
+		if len(cands) == 1 && cands[0] == p {
+			return key, a, true
+		}
+	}
+	return "", UnifiedAlias{}, false
 }
 
 // providerStatus 供 /status 与面板展示各 provider 的健康度与别名归属。
@@ -320,7 +393,7 @@ func (h *Handler) dispatchUnifiedAlias(w http.ResponseWriter, r *http.Request, b
 // doubao+trae 的公共别名，旧判断会把它错算成 workbuddy 的独有别名。
 func (h *Handler) providerStatus() map[string]any {
 	out := map[string]any{}
-	if len(h.cfg.Aliases) == 0 {
+	if len(h.Aliases()) == 0 {
 		return out
 	}
 	type stat struct{ public, own int }
@@ -333,7 +406,7 @@ func (h *Handler) providerStatus() map[string]any {
 		}
 		return s
 	}
-	for _, a := range h.cfg.Aliases {
+	for _, a := range h.Aliases() {
 		seen := map[string]bool{}
 		for _, p := range a.Candidates() {
 			if p != "" {
@@ -402,6 +475,38 @@ func (h *Handler) providerStatus() map[string]any {
 			}
 		}
 		out["trae"] = item
+	}
+
+	// Loomy：进程内 provider，账号数来自 loomy/accounts.json。
+	if h.cfg.LoomyChat != nil {
+		ls, lOK := stats["loomy"]
+		if !lOK {
+			ls = &stat{}
+		}
+		item := map[string]any{
+			"aliases": ls.public + ls.own, "aliases_public": ls.public, "aliases_own": ls.own,
+		}
+		if n := len(loadLoomyAccounts().Accounts); n > 0 {
+			item["healthy"], item["total"] = n, n
+		}
+		out["loomy"] = item
+	}
+
+	// CodeArts：进程内 provider。健康度 = 「有凭据且 STS 未过期」——
+	// 这里刻意不查额度：概览页每 15 秒刷新一次，顺手打一次上游会白白消耗积分。
+	if h.cfg.CodeArtsChat != nil {
+		cs, cOK := stats["codearts"]
+		if !cOK {
+			cs = &stat{}
+		}
+		item := map[string]any{
+			"aliases": cs.public + cs.own, "aliases_public": cs.public, "aliases_own": cs.own,
+		}
+		if h.cfg.CodeArtsHealth != nil {
+			healthy, total := h.cfg.CodeArtsHealth()
+			item["healthy"], item["total"] = healthy, total
+		}
+		out["codearts"] = item
 	}
 	return out
 }

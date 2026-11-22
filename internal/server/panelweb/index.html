@@ -33,6 +33,7 @@ main{flex:1;min-width:0;padding:22px 26px 40px}
 .ok{background:rgba(63,185,80,.14);color:var(--accent);border-color:rgba(63,185,80,.3)}
 .warn{background:rgba(210,153,34,.14);color:var(--warn);border-color:rgba(210,153,34,.3)}
 .bad{background:rgba(248,81,73,.14);color:var(--bad);border-color:rgba(248,81,73,.3)}
+.pill.muted{background:rgba(139,148,158,.12);color:var(--dim);border-color:rgba(139,148,158,.28)}
 .grid{display:grid;gap:14px}
 .cards{grid-template-columns:repeat(auto-fit,minmax(170px,1fr));margin-bottom:18px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px}
@@ -71,6 +72,22 @@ pre{background:#0d131a;border:1px solid var(--line);border-radius:10px;padding:1
 .tag.wb{background:rgba(88,166,255,.14);color:var(--blue)}
 .tag.db{background:rgba(63,185,80,.14);color:var(--accent)}
 .tag.trae{background:rgba(188,140,255,.16);color:#c9a0ff}
+.tag.ca{background:rgba(255,171,64,.16);color:#ffb454}
+.tag.lm{background:rgba(255,140,200,.16);color:#ff9ecb}
+/* 上手引导：每平台一张卡，步骤用统一的三段式（注册 / 取凭据 / 验证） */
+.glink{color:var(--blue);text-decoration:none;font-size:12px;border:1px solid rgba(88,166,255,.35);
+  background:rgba(88,166,255,.12);padding:4px 11px;border-radius:99px;white-space:nowrap}
+.glink:hover{background:rgba(88,166,255,.22)}
+.gstep{display:flex;flex-direction:column;gap:10px;font-size:13px;line-height:1.65}
+.gstep .s b{font-weight:600;margin-right:6px}
+.gstep code{background:#0d131a;border:1px solid var(--line);border-radius:5px;padding:1px 6px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--blue);
+  overflow-wrap:anywhere}
+.gstep .hint{margin:0}
+/* 卡片数少、每张内容多：两列比三列好读；标题行允许收缩，避免副标题被按钮挤到第二行。 */
+.gcols{display:grid;grid-template-columns:repeat(auto-fit,minmax(480px,1fr));gap:14px}
+.gcard .panel-h>span:first-child{flex:1 1 auto;min-width:0;line-height:1.5}
+.gcard .panel-h>a{flex:none}
 /* 下拉菜单：账号页按 provider 分组，避免一排七个按钮 */
 .dd{position:relative;display:inline-block}
 .dd-menu{display:none;position:absolute;right:0;top:calc(100% + 6px);z-index:60;min-width:156px;
@@ -117,7 +134,7 @@ tr.drag-row.drag-over td{border-top:2px solid var(--accent)}
 .chip{background:#0d131a;border:1px solid var(--line);border-radius:9px;padding:6px 11px;font-size:12px;color:var(--dim)}
 .chip b{color:var(--fg);font-size:14px;font-weight:600;margin-left:6px;font-variant-numeric:tabular-nums}
 .chip.on{border-color:rgba(63,185,80,.35);color:var(--fg)}
-.scroll{max-height:430px;overflow:auto}
+.scroll{max-height:calc(100vh - 250px);min-height:320px;overflow:auto}
 .tbl-num{text-align:right;font-variant-numeric:tabular-nums;width:1%;white-space:nowrap}
 .muted{color:var(--dim)}
 .small{font-size:12px}
@@ -142,6 +159,7 @@ tr.drag-row.drag-over td{border-top:2px solid var(--accent)}
       <a data-v="overview" class="on"><i>◈</i>概览</a>
       <a data-v="accounts"><i>◉</i>账号</a>
       <a data-v="access"><i>⚿</i>接入</a>
+      <a data-v="guide"><i>▦</i>上手引导</a>
       <a data-v="logs"><i>≡</i>请求日志</a>
     </nav>
     <div class="sidefoot">unified-api-v2 · <span id="foot-port">—</span>
@@ -225,6 +243,7 @@ tr.drag-row.drag-over td{border-top:2px solid var(--accent)}
           <span class="dd" id="dd-trae">
             <button class="ghost" onclick="toggleDD('dd-trae')">Trae ▾</button>
             <div class="dd-menu">
+              <a onclick="closeDD();traeWebLogin()">Web 登录（推荐）</a>
               <a onclick="closeDD();openTraeToken()">粘贴凭证</a>
               <a onclick="closeDD();importTraeLocal(this)">导入本机 Trae</a>
             </div>
@@ -232,7 +251,15 @@ tr.drag-row.drag-over td{border-top:2px solid var(--accent)}
           <span class="dd" id="dd-loomy">
             <button class="ghost" onclick="toggleDD('dd-loomy')">Loomy ▾</button>
             <div class="dd-menu">
+              <a onclick="closeDD();loomyWebLogin()">Web 登录（推荐）</a>
               <a onclick="closeDD();importLoomyLocal(this)">导入本机 Loomy</a>
+            </div>
+          </span>
+          <span class="dd" id="dd-ca">
+            <button class="ghost" onclick="toggleDD('dd-ca')">CodeArts ▾</button>
+            <div class="dd-menu">
+              <a onclick="closeDD();codeArtsWebLogin()">Web 登录（推荐）</a>
+              <a onclick="closeDD();importCodeArts(null)">从本机 IDE 导入</a>
             </div>
           </span>
           <button class="ghost" id="acc-mode-btn" onclick="cycleMode(this)">选号：—</button>
@@ -248,15 +275,102 @@ tr.drag-row.drag-over td{border-top:2px solid var(--accent)}
         <div class="panel-b" style="display:flex;flex-direction:column;gap:14px" id="key-box">
           <div class="hint" style="margin:0">加载中…</div>
         </div></div>
-      <div class="panel"><div class="panel-h"><span>全局别名表 <span class="small muted">客户端 model 填这里的别名</span></span></div>
+      <div class="panel"><div class="panel-h"><span>全局别名表 <span class="small muted">客户端 model 填这里的别名 · 共 <span id="alias-count">—</span> 条（表内可滚动）</span></span></div>
         <div class="panel-b" style="padding:0"><div class="scroll"><table id="model-table"></table></div></div></div>
-      <div class="hint">公共模型挂两个 Provider 并标「自动切换」：按配置顺序选路、失败自动切另一侧；各侧独有模型只挂单个 Provider。改别名需改 config.json 并重启。</div>
+      <div class="hint">公共模型挂两个 Provider 并标「自动切换」：按配置顺序选路、失败自动切另一侧；各侧独有模型只挂单个 Provider。改别名保存后约 5 秒自动热载；改端口 / provider 开关仍需重启。</div>
+    </section>
+
+    <section data-v="guide" hidden>
+      <div class="panel"><div class="panel-h"><span>三步跑通 <span class="small muted">首次部署按顺序做，每步都有判据</span></span></div>
+        <div class="panel-b" style="padding:0">
+          <table>
+            <tr><th style="width:56px;white-space:nowrap">步骤</th><th>操作</th><th style="width:38%">成功的标志</th></tr>
+            <tr><td class="mono">1</td><td>编译 <code>unified-api-v2</code> 与 <code>login</code> 到同一目录</td>
+              <td>两个可执行文件存在，<code>go build</code> 无报错</td></tr>
+            <tr><td class="mono">2</td><td>启动网关，用<b>你改过</b>的 <code>panel.auth</code> 登录面板（示例口令是公开占位符）</td>
+              <td>日志出现 <code>listening on ...</code>；本页可打开</td></tr>
+            <tr><td class="mono">3</td><td>按下方卡片接账号，再配别名（保存后约 5 秒热载）</td>
+              <td>「账号」页出现对应 provider 行；<code>/v1/models</code> 列出别名</td></tr>
+          </table>
+          <div class="hint" style="padding:12px 16px;margin:0">刚部署、还没接账号时 <code>/healthz</code> 返回 503 属预期：它的判据是「现在能不能受理请求」，不是「进程是否活着」。接上账号后会转 200。</div>
+        </div></div>
+
+      <div class="panel"><div class="panel-h"><span>客户端接入 <span class="small muted">任何 OpenAI 兼容客户端都能用</span></span></div>
+        <div class="panel-b">
+          <div class="gstep">
+            <div class="s"><b>Base URL</b><code id="guide-base">—</code></div>
+            <div class="s"><b>API Key</b><code>config.json</code> 里的 <code>api_key</code>，请求头写 <code>Authorization: Bearer &lt;key&gt;</code></div>
+            <div class="s"><b>Model</b>「接入」页全局别名表里的任意别名，例如 <code>auto</code>、<code>deepseek-v4-flash</code></div>
+          </div>
+        </div></div>
+
+      <div class="gcols">
+        <div class="panel gcard">
+          <div class="panel-h"><span><span class="tag wb">workbuddy</span> WorkBuddy <span class="small muted">OAuth</span></span>
+            <a class="glink" href="https://www.workbuddy.cn/events/invite?inviteCode=aop0fmuxb" target="_blank" rel="noopener">注册 / 邀请链接 ↗</a></div>
+          <div class="panel-b"><div class="gstep">
+            <div class="s"><b>1 注册</b>打开邀请链接，用手机号或邮箱登录网页版即完成注册。国内版与国际版是两套账号体系。</div>
+            <div class="s"><b>2 取凭据</b>「账号」→ WorkBuddy ▾ →「OAuth 登录」→ 选 <code>cn</code> / <code>global</code> →「获取登录链接」→ 浏览器完成登录 → 回到弹窗点「完成登录」。</div>
+            <div class="s"><b>3 验证</b>账号表出现 WorkBuddy 行，用 <code>auto</code> 发一次对话返回 200。</div>
+            <div class="hint">面板 OAuth 依赖网关同目录的 <code>login.exe</code>；缺失会报 <code>oauth_unavailable</code>。也可命令行：<code>login.exe --realm=cn url</code> 后 <code>poll</code>。</div>
+          </div></div>
+        </div>
+
+        <div class="panel gcard">
+          <div class="panel-h"><span><span class="tag db">doubao</span> 豆包 <span class="small muted">Cookie 号池</span></span>
+            <a class="glink" href="https://www.doubao.com/pc/desktop-fission/pro-trial/invited?inviteCode=v10zWpgbBZ" target="_blank" rel="noopener">注册 / 邀请链接 ↗</a></div>
+          <div class="panel-b"><div class="gstep">
+            <div class="s"><b>1 注册</b>打开邀请链接，用手机号登录；网页版或桌面客户端均可。</div>
+            <div class="s"><b>2 导入（推荐）</b>本机豆包客户端已登录 → <b>完全退出客户端</b>（Cookie 库有文件锁）→「账号」→ 豆包 ▾ →「导入本机豆包」。</div>
+            <div class="s"><b>2′ 导入（备用）</b>浏览器登录 doubao.com → 复制完整 Cookie →「账号」→ 豆包 ▾ →「粘贴 Cookie」，填账号名与 Cookie。</div>
+            <div class="s"><b>3 验证</b>账号表出现豆包行（含积分列）；对话返回 200。</div>
+            <div class="hint">Cookie 等价于账号密码，不要截图或分享。首次对话首字节可能超过 60 秒，属冷启动。</div>
+          </div></div>
+        </div>
+
+        <div class="panel gcard">
+          <div class="panel-h"><span><span class="tag trae">trae</span> TRAE <span class="small muted">独立进程 :8000</span></span>
+            <a class="glink" href="https://www.trae.cn/events/code-fission/9AAHWWJUQUDX?utm_source=copy_link&utm_medium=code_fission" target="_blank" rel="noopener">注册 / 邀请链接 ↗</a></div>
+          <div class="panel-b"><div class="gstep">
+            <div class="s"><b>1 注册</b>打开邀请链接，下载并登录 Trae CN 客户端。</div>
+            <div class="s"><b>2 起子进程</b>先准备 <code>trae/.venv</code> 依赖并运行 <code>trae\run.cmd</code>；<code>curl http://127.0.0.1:8000/healthz</code> 返回 200 才算就绪。</div>
+            <div class="s"><b>3 导入</b>本机已登录 Trae 时用「账号」→ Trae ▾ →「导入本机 Trae」；否则「粘贴凭证」填 Cloud-IDE-JWT，或到 <a class="glink" href="http://127.0.0.1:8000/web/login" target="_blank" rel="noopener">Trae2api 网页授权 ↗</a>。</div>
+            <div class="s"><b>4 验证</b>账号表出现 Trae 行（含积分）；对话返回 200。</div>
+            <div class="hint">网关只做转发，账号与 OAuth 归 trae2api；模型名与别家不同，别名里要用 <code>model_by_provider</code> 映射。</div>
+          </div></div>
+        </div>
+
+        <div class="panel gcard">
+          <div class="panel-h"><span><span class="tag ca">codearts</span> CodeArts（码道） <span class="small muted">凭据约 24h</span></span>
+            <a class="glink" href="https://codearts.huaweicloud.com/" target="_blank" rel="noopener">官方入口 ↗</a></div>
+          <div class="panel-b"><div class="gstep">
+            <div class="s"><b>1 注册</b>用华为云账号登录，下载并安装码道 IDE，在 IDE 内登录一次。</div>
+            <div class="s"><b>2 导入</b>「账号」→ CodeArts ▾ →「从本机 IDE 导入」；或命令行 <code>codearts-import.exe</code>（<code>-check</code> 只看剩余时长）。</div>
+            <div class="s"><b>3 验证</b>账号表出现 CodeArts 行与额度；对话返回 200。</div>
+            <div class="hint">STS 过期时报 <code>upstream_credential_expired</code>：开一次 IDE 让凭据续期，再导入一次，无需重启。需与 IDE 同一 Windows 用户；<code>takeover</code> 默认关闭（只读复用）。</div>
+          </div></div>
+        </div>
+
+        <div class="panel gcard">
+          <div class="panel-h"><span><span class="tag lm">loomy</span> Loomy <span class="small muted">Cookie</span></span>
+            <a class="glink" href="https://loomy.xunfei.cn/web" target="_blank" rel="noopener">注册入口 ↗</a></div>
+          <div class="panel-b"><div class="gstep">
+            <div class="s"><b>1 注册</b>打开入口，用手机号 + 验证码登录。</div>
+            <div class="s"><b>2 登录窗口</b>运行 <code>.\tools\loomy-login.ps1</code> <button class="ghost" style="padding:2px 8px;font-size:12px" data-copy=".\tools\loomy-login.ps1" onclick="copyText(this)">复制</button>，在弹出的独立 Edge 窗口登录，然后<b>关闭整个窗口</b>。</div>
+            <div class="s"><b>3 导入</b>「账号」→ Loomy ▾ →「导入本机 Loomy」。</div>
+            <div class="s"><b>4 验证</b>账号表出现 Loomy 行；对话返回 200。</div>
+            <div class="hint">只签发一个 <code>loomy_web_session</code>，失效后需重走登录 + 导入；专用 profile 不影响日常浏览器。</div>
+          </div></div>
+        </div>
+      </div>
+
+      <div class="hint" style="margin-top:14px">完整说明（依赖版本、配置字段、报错对照）见仓库根目录 <code>README.md</code>。</div>
     </section>
 
     <section data-v="logs" hidden>
       <div class="panel"><div class="panel-h"><span>最近请求 <span class="small muted" id="log-window"></span></span>
         <select id="log-filter" style="width:auto" onchange="renderLogRecent()">
-          <option value="">全部 Provider</option><option value="workbuddy">WorkBuddy</option><option value="doubao">豆包</option><option value="trae">Trae</option>
+          <option value="">全部 Provider</option><option value="workbuddy">WorkBuddy</option><option value="doubao">豆包</option><option value="trae">Trae</option><option value="loomy">Loomy</option><option value="codearts">CodeArts</option>
         </select></div>
         <div class="panel-b" style="padding:0"><div class="scroll"><table id="log-recent"></table></div>
           <div class="hint" style="padding:0 16px 12px;margin:0">时间 / Provider / 模型（别名 → 上游真名）/ 账号 / 状态 / 耗时 / token。</div>
@@ -306,8 +420,8 @@ async function doLogout(){try{await post('/logout',{});}catch(e){}location.href=
 
 function badge(text,cls){return '<span class="pill '+cls+'">'+esc(text)+'</span>';}
 function tag(provider){
-  // 三个 provider 各用一色，避免 trae 落到默认分支与 workbuddy 同色而混淆。
-  const cls=provider==='doubao'?'db':(provider==='trae'?'trae':'wb');
+  // 各 provider 一色，避免落到默认分支与 workbuddy 同色而混淆。
+  const cls=provider==='doubao'?'db':(provider==='trae'?'trae':(provider==='codearts'?'ca':(provider==='loomy'?'lm':'wb')));
   return '<span class="tag '+cls+'">'+esc(provider)+'</span>';
 }
 function emptyRow(cols,msg){return '<tr><td colspan="'+cols+'" class="empty">'+esc(msg)+'</td></tr>';}
@@ -318,6 +432,9 @@ function goView(v){
   a.classList.add('on');currentView=v;
   document.getElementById('title').textContent=a.textContent.replace(/[◈◉◎⚿▦≡▶⚙ⓘ]/g,'').trim();
   document.querySelectorAll('section[data-v]').forEach(s=>s.hidden=(s.dataset.v!==v));
+  // 页签写进 hash：刷新后停在原页，链接可以直接分享到某一页（如 #guide）。
+  // 用 replaceState 而不是给 hashchange 挂监听——避免「改 hash → 触发监听 → 再改 hash」的回环。
+  if(location.hash!=='#'+v)history.replaceState(null,'','#'+v);
   loadView(v);
   window.scrollTo({top:0,behavior:'smooth'});
 }
@@ -328,7 +445,26 @@ function refreshView(){loadView(currentView);}
 
 function loadView(v){
   ({overview:loadOverview,accounts:loadAccounts,access:loadAccess,
-    logs:loadLogs})[v]?.();
+    guide:loadGuide,logs:loadLogs})[v]?.();
+}
+
+// loadGuide 上手引导页：把客户端接入的 Base URL 按当前访问地址算出来，
+// 避免在页面上写死 127.0.0.1（局域网访问时写死值会把人带错）。
+function loadGuide(){
+  const el=document.getElementById('guide-base');
+  if(el)el.textContent=location.origin+'/v1';
+}
+
+// copyText 复制按钮统一入口：优先 Clipboard API，失败回落 execCommand。
+// 面板可能以 http://<局域网IP> 访问，那种来源不是安全上下文，Clipboard 会拒绝。
+async function copyText(btn){
+  const t=btn.dataset.copy||'';
+  try{await navigator.clipboard.writeText(t);toast('已复制');}
+  catch(e){
+    const ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);
+    ta.select();try{document.execCommand('copy');toast('已复制');}catch(e2){toast('复制失败，请手动选择',true);}
+    ta.remove();
+  }
 }
 
 /* ---------- 实时使用 / 请求日志：公共格式化 ---------- */
@@ -362,7 +498,9 @@ function renderRecent(el,rows,limit){
       '<td class="small muted">'+esc(fmtTime(e.at))+'</td>'+
       '<td>'+tag(e.provider)+'</td>'+
       '<td>'+modelCell(e)+(e.stream?' <span class="tag">流式</span>':'')+'</td>'+
-      '<td>'+esc(e.account||'—')+'</td>'+
+      // trae 是外部进程，账号由 trae2api 内部轮询，不会回传用了哪个号 ——
+      // 显示「—」会让人以为网关丢了这个字段。这里如实说明。
+      '<td>'+esc(e.account||((e.provider==='trae')?'（trae 内部轮询）':'—'))+'</td>'+
       '<td>'+stBadge(e.status)+'</td>'+
       '<td class="tbl-num">'+esc(fmtDur(e.ms))+'</td>'+
       '<td class="tbl-num">'+esc(fmtTok(e.tokens))+'</td></tr>').join('')
@@ -375,21 +513,21 @@ async function loadOverview(){
     document.getElementById('foot-port').textContent=location.host||'—';
     const [d,act]=await Promise.all([api('/overview'),api('/activity')]);
     const wb=d.workbuddy||{},db=(d.doubao||{}).data||{};
+    // 用量卡片：今日 / 累计。数据来自 data/usage.json（持久化），重启不清零。
+    const u=d.usage||{};
+    const num=v=>Number(v||0).toLocaleString();
+    const uc=document.getElementById('ov-cards');
+    if(uc){
+      uc.innerHTML=[
+        ['今日请求', num(u.today_req), '/ '+num(u.total_req)],
+        ['今日 token', num(u.today_tokens), '/ '+num(u.total_tokens)],
+      ].map(([k,v,t])=>'<div class="card"><div class="k">'+esc(k)+
+          '</div><div class="v">'+esc(v)+'<small style="font-size:12px;color:var(--dim);font-weight:400"> '+esc(t)+'</small></div></div>').join('');
+    }
     document.getElementById('health').textContent='已连接';
     document.getElementById('health').className='pill ok';
-    // 卡片只留 Provider 健康度：三个 provider 各一张。别名明细归「接入」页，
-    // 手动停用 / 待重登录在「账号」页逐账号可见，均不在此重复计数。
-    const cards=[
-      ['WorkBuddy 健康',wb.healthy,'/ '+(wb.total??0)],
-      ['豆包健康',db.healthy,'/ '+(db.total??0)],
-    ];
-    const traeSt=(d.providers||{}).trae;
-    if(traeSt){
-      // Trae 是外部进程：healthy 由 /healthz 探测给出（在线 1 / 离线 0），total 固定 1。
-      cards.push(['Trae 健康',traeSt.healthy??0,'/ '+(traeSt.total??0)]);
-    }
-    document.getElementById('ov-cards').innerHTML=cards
-      .map(([k,v,s])=>'<div class="card"><div class="k">'+esc(k)+'</div><div class="v">'+esc(v)+'<small>'+esc(s)+'</small></div></div>').join('');
+    // 概览页不再堆健康卡片：Provider 与路由表已经逐行给了 健康/总数，
+    // 顶部重复一遍只是占高度（用户 2026-11-22 明确要求删除）。
     // 选号模式直接取 pool 的实际状态（act.selection_mode），不在前端另存一份。
     // 标题栏不再放「X 优先」「选号：优先级」两个徽标：前者与表格顺序列重复，
     // 后者并到说明行，避免标题堆状态。
@@ -407,21 +545,19 @@ async function loadOverview(){
       const healthy=Number(x.healthy||0), total=Number(x.total||0);
       // workbuddy 是本地池，接线即在线；外部 provider 以健康数为准（total>0 但 healthy=0 = 全部不可用）。
       const online=n==='workbuddy'?true:healthy>0;
-      const ali=x.aliases_public!=null?esc(x.aliases_public)+' / '+esc(x.aliases_own??0):esc(x.aliases??'—');
       // Provider 行可拖拽：顺序决定自动路由先试哪一侧，用户要求直接在这里排。
       return '<tr class="prow" draggable="true" data-provider="'+esc(n)+'" style="cursor:move"'+
         ' ondragstart="onProvDragStart(event)" ondragover="onProvDragOver(event)"'+
         ' ondragleave="onProvDragLeave(event)" ondrop="onProvDrop(event)" ondragend="onProvDragEnd(event)">'+
         '<td class="tbl-num mono">'+(i+1)+'</td><td>'+tag(n)+'</td>'+
-        '<td class="mono">'+ali+'</td>'+
         '<td>'+badge(String(healthy),'ok')+' <span class="small muted">/ '+esc(total)+'</span></td>'+
         '<td class="tbl-num">'+esc(infl[n]??0)+'</td>'+
         '<td>'+badge(online?'在线':(total>0?'异常':'未启用'),online?'ok':'bad')+'</td></tr>';
     }).join('')+
-      '<tr><td colspan="6" class="small muted" style="padding:6px 12px">顺序来源：'+
+      '<tr><td colspan="5" class="small muted" style="padding:6px 12px">顺序来源：'+
       esc(po.source==='override'?'已保存的运行时偏好':'来自别名配置')+'</td></tr>';
     document.getElementById('ov-providers').innerHTML=
-      '<tr><th style="width:76px;white-space:nowrap">顺序</th><th>Provider</th><th>别名（公共 / 独有）</th>'+
+      '<tr><th style="width:76px;white-space:nowrap">顺序</th><th>Provider</th>'+
       '<th>健康 / 总数</th><th class="tbl-num">在途</th><th>状态</th></tr>'+rows;
     // 实时使用：近 5 分钟吞吐（在途已在 Provider 表逐行给出，此处不再重复）。
     const l5=(act.last5m||{});
@@ -462,7 +598,7 @@ function prioBadge(p){return '<span class="pill prio">'+(p&&p>0?esc(p):'—')+'<
 //        + /activity（实时状态、窗口统计、最近活动）；豆包额度由 refreshQuota() 异步回填。
 async function loadAccounts(){
   try{
-    const [d,p,act,tr,lm]=await Promise.all([
+    const [d,p,act,tr,lm,ca]=await Promise.all([
       api('/accounts'),
       api('/pool').catch(()=>({})),
       api('/activity').catch(()=>({})),
@@ -470,6 +606,8 @@ async function loadAccounts(){
       api('/trae/accounts').catch(()=>({})),
       // Loomy 凭证由网关自己管理（loomy/accounts.json），没有外部进程。
       api('/loomy/accounts').catch(()=>({})),
+      // CodeArts：额度要现查上游（4s 超时），失败不拖住整页。
+      api('/codearts/accounts').catch(()=>({})),
     ]);
     // 运行数据按 provider|account 索引（activity.account 与 acctLabel 口径一致）。
     const run={};
@@ -507,6 +645,32 @@ async function loadAccounts(){
           ? (Number(a.permanent).toLocaleString()+(a.daily!=null?' <span class="small muted">/'+Number(a.daily)+'</span>':''))
           : '<span class="small muted" title="'+(a.credit_err||'未查询')+'">—</span>',
         cool:0,cf:null,run:run['loomy|'+a.name]||{}});
+    });
+    // CodeArts：网关自己换的 STS，额度要现查上游；STS 到期后这里显示「—」并带原因。
+    ((ca.accounts)||[]).forEach(a=>{
+      const known=!!a.expiring_known;
+      let credit;
+      if(a.err){
+        credit='<span class="small muted" title="'+esc(a.err)+'">—</span>';
+      }else{
+        credit=esc(Number(a.credits||0).toLocaleString());
+        if(known&&Number(a.expiring)>0){
+          // 只看数字会误读成「两个积分值」，必须带「临期」二字（含在总额内的子集）。
+          credit+='<span class="small muted" style="margin-left:6px" title="总额中的 '+esc(a.expiring)+' 分即将到期，用完优先消耗">临期 '+esc(Number(a.expiring).toLocaleString())+'</span>';
+        }
+      }
+      const tip=[];
+      if(a.package)tip.push(a.package);
+      if(a.basic!=null)tip.push('基础 '+a.basic);
+      if(a.bonus!=null)tip.push('赠送 '+a.bonus);
+      if(a.on_demand!=null)tip.push('按需 '+a.on_demand);
+      if(a.expires_at){
+        const e=new Date(a.expires_at);
+        if(!isNaN(e))tip.push('STS 至 '+e.toLocaleString());
+      }
+      rows.push({provider:'codearts',id:a.name,label:a.name||'codearts',
+        tip:tip.join(' · '),priority:1,disabled:false,cooling:false,
+        credit:credit,cool:0,cf:null,run:{}});
     });
     // Trae 账号：provider 内部自己轮询与签到，因此没有网关侧优先级/在途/窗口统计。
     if(tr.base_url)window.__traeBase=tr.base_url;
@@ -550,11 +714,15 @@ async function loadAccounts(){
           : (r.provider==='loomy'
               ? ' <button class="ghost" onclick="removeLoomyAcc(\''+esc(r.id||'')+'\',this)">删除</button>'
               : '');
+        // CodeArts 的「添加账号」= 从本机 IDE 重读凭据（没有用户名密码可填）。
+        const caImport=r.provider==='codearts'
+          ? ' <button class="ghost" onclick="importCodeArts(this)" title="从本机码道 IDE 重新读取凭据（接管模式下会拒绝更旧的凭据）">导入</button>'
+          : '';
         const ops=isTrae
           ? '<button class="ghost" onclick="toggleTraeAcc(\''+esc(r.id||'')+'\','+(r.trae.enabled?1:0)+',this)">'+(r.trae.enabled?'停用':'启用')+'</button> '+
             '<button class="ghost" onclick="checkinTrae(\''+esc(r.id||'')+'\',this)">签到</button> '+
             '<button class="ghost" onclick="removeTraeAcc(\''+esc(r.id||'')+'\',this)">删除</button>'
-          : toggleBtn+delBtn;
+          : toggleBtn+delBtn+caImport;
         const lastCell=isTrae
           ? '<span class="small '+(r.trae.checkin?'muted':'muted')+'">签到 '+(r.trae.checkin?'已签':'未签')+'</span>'
           : esc(fmtTime(r.run.last_at));
@@ -701,6 +869,59 @@ async function toggleTraeAcc(id,enabled,btn){
     loadAccounts();
   }catch(e){toast(e.message,true);}finally{if(btn)btn.disabled=false;}
 }
+// codeArtsWebLogin 走网关自己的授权码流程（PKCE + DPoP），不依赖 IDE。
+// 登录完成后浏览器会回调网关的 /oauth/callback，账号自动落盘。
+async function codeArtsWebLogin(){
+  try{
+    const r=await api('/codearts/login');
+    if(!r||!r.url){ toast('获取登录链接失败',true); return; }
+    window.open(r.url,'_blank');
+    toast('已打开华为登录页；登录完成后会自动回到网关（5 分钟内有效）');
+  }catch(e){ toast(e.message,true); }
+}
+
+// traeWebLogin 打开 trae2api 自带的登录页（账号与 OAuth 都归它）。
+async function traeWebLogin(){
+  try{
+    const r=await api('/trae/login-url');
+    if(!r||!r.url){ toast('获取登录地址失败',true); return; }
+    window.open(r.url,'_blank');
+    toast(r.hint||'登录页已打开；登录后回面板刷新');
+  }catch(e){ toast(e.message,true); }
+}
+
+// loomyWebLogin 打开独立 Edge 登录窗口，网关后台轮询 profile 的 cookie，
+// 读到就自动落盘——用户只需要「登录 + 关窗口」，不用再回来点导入。
+async function loomyWebLogin(){
+  try{
+    const r=await post('/loomy/login',{});
+    if(!r||!r.ok){ toast((r&&(r.message||r.err))||'打开登录窗口失败',true); return; }
+    toast(r.hint||'登录窗口已打开');
+    let n=0;
+    const timer=setInterval(async()=>{
+      n++;
+      try{
+        const s=await api('/loomy/accounts');
+        if(s&&(s.total||0)>0){ clearInterval(timer); loadAccounts(); toast('Loomy 账号已导入'); }
+      }catch(e){}
+      if(n>100){ clearInterval(timer); }
+    },3000);
+  }catch(e){ toast(e.message,true); }
+}
+
+// importCodeArts 从本机 IDE 重读 CodeArts 凭据。
+// 后端会拒绝「比当前更旧」的凭据，避免接管模式下把能用的换成一具尸体。
+async function importCodeArts(btn){
+  if(!confirm('从本机码道 IDE 重新读取 CodeArts 凭据？\n\n接管模式下 IDE 那份可能已失效，网关会拒绝更旧的凭据。'))return;
+  if(btn)btn.disabled=true;
+  try{
+    const r=await post('/codearts/import',{});
+    if(r&&r.ok){ toast('导入成功：'+(r.name||'')+'（STS 至 '+(r.expires_at||'?')+'）'); loadAccounts(); }
+    else{ toast((r&&(r.err||r.message))||'导入失败',true); }
+  }catch(e){ toast(e.message,true); }
+  finally{ if(btn)btn.disabled=false; }
+}
+
 async function checkinTrae(id,btn){
   if(btn)btn.disabled=true;
   try{
@@ -872,6 +1093,7 @@ async function copyKey(label,btn){
 async function loadModels(){
   try{
     const d=await api('/models');aliases=d.aliases||[];
+    { const ac=document.getElementById('alias-count'); if(ac) ac.textContent=aliases.length; }
     document.getElementById('model-table').innerHTML='<tr><th>#</th><th>别名</th><th>Provider</th><th>上游模型</th><th>上下文</th></tr>'+
       (aliases.length?aliases.map(a=>{
         const ps=(a.providers&&a.providers.length)?a.providers:(a.provider?[a.provider]:[]);
@@ -962,6 +1184,17 @@ async function loadTasks(){
         result:'<span class="small">成功 '+esc(r.ok??0)+' · 已签 '+esc(r.already??0)+
                ' · 失败 '+esc(r.fail??0)+' · 跳过 '+esc(r.skipped??0)+'</span>',
         detail:'—',dur:dur});
+      // 额外 provider（CodeArts）与 workbuddy 共用同一份落盘，但用户要看自己那一行，
+      // 否则「签到成功」只能从聚合计数里猜。
+      ((r.results)||[]).forEach(x=>{
+        const uid=String(x.uid||'');
+        if(!uid.startsWith('codearts:'))return;
+        rows.push({at:okAt?st.getTime():0,provider:'codearts',
+          target:x.nickname||uid.slice('codearts:'.length),
+          result:ckBadge(x.status),
+          detail:x.detail||(x.credits!=null?('剩余 '+x.credits+' 积分'):'—'),
+          dur:'—'});
+      });
     });
     let dres=((c.doubao_log||{}).records)||[];
     if(!dres.length)dres=(dbS.results)||[];
@@ -995,7 +1228,8 @@ async function loadTasks(){
 }
 // ckBadge 签到状态 → 徽标（豆包与 Trae 的 status 取值一致）。
 function ckBadge(st){
-  const m={ok:['成功','ok'],already:['已签','warn'],no_campaign:['无活动','warn'],error:['失败','bad']};
+  const m={ok:['成功','ok'],already:['已签','warn'],no_campaign:['无活动','warn'],
+           error:['失败','bad'],fail:['失败','bad'],skipped:['跳过','muted']};
   const v=m[st]||[st||'—','warn'];
   return badge(v[0],v[1]);
 }
@@ -1147,7 +1381,7 @@ let oauthState={realm:'cn',authURL:''};
 function openWBOAuth(){
   oauthState={realm:'cn',authURL:''};
   openDlg('WorkBuddy · OAuth 登录',
-    '<div class="note">步骤：① 选择 realm → ② 点「获取登录链接」→ ③ 在浏览器打开链接并登录 → ④ 回到此窗口点「完成登录」。</div>'+
+    '<div class="note">步骤：① 选择 realm → ② 点「获取登录链接」→ ③ 在浏览器登录。登录成功后窗口会自动关闭（无需回来点「完成登录」）。</div>'+
     '<div class="field"><label>Realm</label><select id="wb-realm">'+
     '<option value="cn">cn（国内）</option><option value="global">global（海外）</option></select></div>'+
     '<div class="oauth-url" id="oauth-url"></div>',
@@ -1161,8 +1395,25 @@ async function startWBOAuth(){
     oauthState.authURL=r.auth_url;
     const el=document.getElementById('oauth-url');
     el.style.display='block';
-    el.innerHTML='请在浏览器打开：<br><a href="'+esc(r.auth_url)+'" target="_blank" rel="noopener">'+esc(r.auth_url)+'</a>';
-    toast('登录链接已生成，请在浏览器完成授权');
+    el.innerHTML='请在浏览器打开：<br><a href="'+esc(r.auth_url)+'" target="_blank" rel="noopener">'+esc(r.auth_url)+'</a>'+
+      '<div class="small muted" style="margin-top:8px">已自动打开浏览器；登录完成后本窗口会自动关闭（也保留「完成登录」手动兜底）。</div>';
+    // 自动打开 + 自动轮询：不再要求用户回来点「完成登录」。
+    // poll 在「还没登录」时会报错，属正常，忽略继续等。
+    window.open(r.auth_url,'_blank');
+    toast('浏览器已打开，登录后会自动完成');
+    let n=0;
+    const timer=setInterval(async()=>{
+      n++;
+      try{
+        const res=await post('/accounts/wb/oauth/poll',{});
+        if(res&&(res.uid||res.added)){
+          clearInterval(timer); closeDlg();
+          toast('登录成功，已添加账号：'+(res.uid||res.added||''));
+          setTimeout(loadAccounts,1500);
+        }
+      }catch(e){ /* 尚未完成授权，继续等 */ }
+      if(n>100){ clearInterval(timer); toast('等待超时（5 分钟），可手动点「完成登录」',true); }
+    },3000);
   }catch(e){toast(e.message,true);}
 }
 async function finishWBOAuth(){
@@ -1196,7 +1447,12 @@ async function submitDBCookie(){
 
 
 
-loadOverview();loadModels();loadSettings();
+// 初始化：只调用确实存在的加载器。
+// 注意别再写已删除视图的 loadXxx（例如 settings 页已移除）——未定义函数会在
+// 这里抛 ReferenceError，把后面的 hash 深链接一起中断，且控制台之外毫无提示。
+loadOverview();loadModels();
+// 支持 #guide 这类深链接：刷新/分享链接时直接落到对应页签。
+if(location.hash.length>1)goView(location.hash.slice(1));
 </script>
 </body>
 </html>

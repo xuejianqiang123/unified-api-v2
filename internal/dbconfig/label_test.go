@@ -10,8 +10,8 @@ func TestModelLabelResolvesInternalKey(t *testing.T) {
 	c := &Config{
 		Models: []string{"auto", "doubao-2.1-lite", "deepseek-v4-flash"},
 		ModelAliases: map[string]string{
-			"auto":            "9",
-			"doubao-2.1-lite": "seed-lite-7b",
+			"auto":              "9",
+			"doubao-2.1-lite":   "seed-lite-7b",
 			"deepseek-v4-flash": "person-deepseek-v4-1-flash-261017",
 		},
 	}

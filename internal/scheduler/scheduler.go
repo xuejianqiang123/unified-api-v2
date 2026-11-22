@@ -60,6 +60,13 @@ type Config struct {
 	// <=0 时禁用分桶（全部归长期，行为与引入前一致）。默认建议 7*24h。
 	ExpiringSoonWindow time.Duration
 
+	// ExtraCheckins 额外 provider 的签到入口（如 CodeArts）。
+	//
+	// 在 workbuddy 全量签到之后依次执行，结果追加到同一份报告（便于面板与历史一并展示）。
+	// 任一家返回错误只记日志，不影响 workbuddy 的结果与其他家；nil = 无额外 provider
+	// （默认，与引入本字段之前逐字一致）。
+	ExtraCheckins []func(context.Context) ([]CheckinOutcome, error)
+
 	// CheckinDisabled 显式关闭签到排程（对应 config 的 schedule.checkin_enabled=false）。
 	// 禁用后不再有任何签到时点。旅行不再搭签到便车（已剥离为独立排程）。
 	CheckinDisabled bool
@@ -278,6 +285,7 @@ func (k taskKind) String() string {
 // fireAt 返回某类任务在 now 之后的最近触发时刻，按配置选择抖动模式：
 //   - RandomDelayMinutes > 0：scheduledSlot 在小时窗口内随机选时刻（sha256 派生）
 //   - 否则：nextFire 的 jitterOffset（整点后偏移，fnv 派生）
+//
 // 两种都是确定性派生，重启后同一 slot 时刻稳定。
 func (s *Scheduler) fireAt(now time.Time, hours []int, kind taskKind) time.Time {
 	if s.cfg.RandomDelayMinutes > 0 {
@@ -616,6 +624,19 @@ func (s *Scheduler) CheckinAll() ([]CheckinOutcome, error) {
 	}
 	log.Printf("checkin done: total=%d ok=%d already=%d fail=%d skipped=%d",
 		len(statuses), okN, alreadyN, failN, skipN)
+	// 额外 provider（CodeArts 等）：独立执行，失败只记日志 —— 不能让第三方的故障
+	// 把 workbuddy 的一次成功签到判成失败，也不能让它跳过 OnCheckinDone 落盘。
+	for _, fn := range s.cfg.ExtraCheckins {
+		extra, err := fn(context.Background())
+		if err != nil {
+			log.Printf("extra checkin failed: %v", err)
+			continue
+		}
+		for _, oc := range extra {
+			log.Printf("extra checkin: uid=%s status=%s detail=%s", oc.UID, oc.Status, oc.Detail)
+		}
+		out = append(out, extra...)
+	}
 	// 顺带做一次签到活动到期预警（只读探测，不影响签到结果；见 checkin_activity.go）。
 	s.warnCheckinActivity(statuses)
 	// 结果回调（落盘供控制台回放）：手动入口与定时排程共用此处，两条路径口径一致。

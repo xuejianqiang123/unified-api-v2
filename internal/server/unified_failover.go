@@ -11,7 +11,6 @@ package server
 import (
 	"bytes"
 	"context"
-	"io"
 	"net/http"
 )
 
@@ -78,56 +77,18 @@ func rewriteSSEModelAny(body []byte, alias string) []byte {
 // callProvider 把一个候选 provider 调用写入 captureWriter。
 // 返回 nil 表示调用链未接线（如 doubao provider 未启用）。
 func (h *Handler) callProvider(ctx context.Context, r *http.Request, provider string, rewrittenBody []byte, capture http.ResponseWriter, aliasName string) error {
-	r2 := r.Clone(ctx)
-	r2.Body = io.NopCloser(bytes.NewReader(rewrittenBody))
-	r2.ContentLength = int64(len(rewrittenBody))
-	r2.Header = r.Header.Clone()
-
-	switch provider {
-	case "doubao":
-		if h.cfg.DoubaoChat == nil {
-			writeOpenAIError(capture, http.StatusServiceUnavailable, "provider_unavailable",
-				"doubao provider 未接线：检查 providers.doubao.enabled 与启动日志")
-			return nil
+	e := h.provider(provider)
+	if e == nil || e.Chat == nil {
+		// 未接线：明确告诉用户查什么，而不是静默 501。
+		msg := provider + " provider 未接线"
+		if e != nil && e.Reason != "" {
+			msg += "：" + e.Reason
 		}
-		r2.Header.Set("X-Unified-Alias", aliasName)
-		// 稳定会话标识：与单 provider 路径同口径，故障转移换 provider 不改会话，
-		// 避免同一轮对话在豆包侧被拆成两个会话。
-		r2.Header.Set(HeaderSessionID, doubaoSessionID(r))
-		h.cfg.DoubaoChat(capture, r2)
-		return nil
-	case "trae":
-		if h.cfg.TraeChat == nil {
-			writeOpenAIError(capture, http.StatusServiceUnavailable, "provider_unavailable",
-				"trae provider 未接线：检查 providers.trae.enabled 与 Trae2api 是否在线")
-			return nil
-		}
-		// 模型名已在 dispatchUnifiedAlias 里按别名重写成上游名；这里只负责转发。
-		r2.Header.Set("X-Unified-Alias", aliasName)
-		h.cfg.TraeChat(capture, r2)
-		return nil
-	case "loomy":
-		if h.cfg.LoomyChat == nil {
-			writeOpenAIError(capture, http.StatusServiceUnavailable, "provider_unavailable",
-				"loomy provider 未接线：检查启动日志与 loomy/accounts.json")
-			return nil
-		}
-		r2.Header.Set("X-Unified-Alias", aliasName)
-		r2.Header.Set(HeaderSessionID, doubaoSessionID(r))
-		h.cfg.LoomyChat(capture, r2)
-		return nil
-	case "workbuddy", "":
-		// 绕过别名分发，直接进原聊天处理；用 bypass 标记防止递归。
-		r2 = r2.WithContext(context.WithValue(r2.Context(), ctxUnifiedBypass{}, true))
-		chat := h.cfg.WorkbuddyChat
-		if chat == nil {
-			chat = h.chatCompletions
-		}
-		chat(capture, r2)
-		return nil
-	default:
-		writeOpenAIError(capture, http.StatusNotImplemented, "provider_unavailable",
-			"provider "+provider+" 尚未接入统一网关")
+		writeOpenAIError(capture, http.StatusServiceUnavailable, "provider_unavailable", msg)
 		return nil
 	}
+	// 单 provider 路径与这里共用同一段调用逻辑（provider_table.go），
+	// session id / 别名头 / bypass 三处差异只写一遍。
+	h.invokeProvider(ctx, capture, r, e, rewrittenBody, aliasName)
+	return nil
 }

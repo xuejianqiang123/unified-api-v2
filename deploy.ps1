@@ -24,10 +24,26 @@ Set-Location $root
 function Step($n, $msg) { Write-Host "[$n] $msg" -ForegroundColor Cyan }
 function Info($msg) { Write-Host "    $msg" -ForegroundColor DarkGray }
 
+# Get-Health 返回 "200" / "503" / "不可达"。
+#
+# 为什么单列 503：网关的 /healthz 语义是「现在能不能受理请求」，号池为空时
+# 返回 503——首次部署还没接账号就是这种状态。旧脚本只认 200，把这种情况
+# 报成「不可达」，看起来像启动失败，实际进程活得好好的。
+function Get-Health([int]$Port) {
+    try {
+        $r = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/healthz" -UseBasicParsing -TimeoutSec 5
+        return [string][int]$r.StatusCode
+    } catch {
+        $resp = $_.Exception.Response
+        if ($resp) { return [string][int]$resp.StatusCode }
+        return '不可达'
+    }
+}
+
 # ---------- 1. 编译网关 ----------
 Step '1/4' '编译 unified-api-v2'
 if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
-    throw '未找到 go，请先安装 Go 1.22+'
+    throw '未找到 go，请先安装 Go 1.26+（版本以 go.mod 的 go 指令为准）'
 }
 # 只编译到 .next.exe。真正的替换必须等进程停掉之后，
 # 否则 Windows 会因文件被占用拒绝覆盖（早期版本在这里就失败）。
@@ -124,9 +140,12 @@ function Restart-Task($name, $port) {
 if (Get-ScheduledTask -TaskName 'UnifiedAPIV2' -ErrorAction SilentlyContinue) {
     Restart-Task 'UnifiedAPIV2' 8900
     Start-Sleep -Seconds 5
-    $ok = $false
-    try { $ok = (Invoke-WebRequest -Uri 'http://127.0.0.1:8900/healthz' -UseBasicParsing -TimeoutSec 5).StatusCode -eq 200 } catch {}
-    Info ("网关 healthz: " + $(if ($ok) { '200' } else { '不可达' }))
+    $h = Get-Health 8900
+    $note = ''
+    if ($h -eq '200') { $note = '可服务' }
+    elseif ($h -eq '503') { $note = '进程已起，号池暂无可用账号；接账号后转 200' }
+    else { $note = '不可达，看 gateway.err.log' }
+    Info ("网关 healthz: $h（$note）")
 } else {
     Info '未找到 UnifiedAPIV2 计划任务，请手动启动 unified-api-v2.exe'
 }
@@ -134,9 +153,9 @@ if (Get-ScheduledTask -TaskName 'UnifiedAPIV2' -ErrorAction SilentlyContinue) {
 if (-not $SkipTrae -and (Get-ScheduledTask -TaskName 'Trae2API' -ErrorAction SilentlyContinue)) {
     Restart-Task 'Trae2API' 8000
     Start-Sleep -Seconds 8
-    $okT = $false
-    try { $okT = (Invoke-WebRequest -Uri 'http://127.0.0.1:8000/healthz' -UseBasicParsing -TimeoutSec 5).StatusCode -eq 200 } catch {}
-    Info ("Trae healthz: " + $(if ($okT) { '200' } else { '不可达（看 trae\data\server.err.log）' }))
+    $hT = Get-Health 8000
+    if ($hT -eq '200') { Info 'Trae healthz: 200' }
+    else { Info ("Trae healthz: $hT（看 trae\data\server.err.log）") }
 }
 
 Write-Host ''

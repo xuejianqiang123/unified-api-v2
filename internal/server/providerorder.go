@@ -15,11 +15,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 )
 
-// validProviders 允许出现在优先序里的 provider 名（与 UnifiedAlias 的取值一致）。
-var validProviders = map[string]bool{"workbuddy": true, "doubao": true, "trae": true}
+// 白名单不再硬编码：已接线的 provider 以注册表为准（provider_table.go），
+// 加一家 provider 只需在 buildProviderTable 里加一个条目。
 
 // providerOrderPref 优先序的内存视图 + 持久化路径。
 // path 为空 = 不落盘（测试或未配置），只在本进程生效。
@@ -30,7 +31,7 @@ type providerOrderPref struct {
 }
 
 // loadProviderOrder 从文件读优先序；文件缺失/损坏/含非法项时返回 nil（= 按配置原序）。
-func loadProviderOrder(path string) []string {
+func loadProviderOrder(path string, known func(string) bool) []string {
 	if path == "" {
 		return nil
 	}
@@ -44,7 +45,7 @@ func loadProviderOrder(path string) []string {
 	if json.Unmarshal(raw, &f) != nil {
 		return nil
 	}
-	if _, err := normalizeProviderOrder(f.Order); err != nil {
+	if _, err := normalizeProviderOrder(f.Order, known); err != nil {
 		return nil
 	}
 	return f.Order
@@ -52,14 +53,15 @@ func loadProviderOrder(path string) []string {
 
 // normalizeProviderOrder 校验并规整优先序：只接受已知 provider、去重、保序。
 // 返回错误时调用方必须原样拒绝，不允许「部分生效」。
-func normalizeProviderOrder(in []string) ([]string, error) {
+func normalizeProviderOrder(in []string, known func(string) bool) ([]string, error) {
 	if len(in) == 0 {
 		return nil, os.ErrInvalid
 	}
 	seen := map[string]bool{}
 	out := make([]string, 0, len(in))
 	for _, p := range in {
-		if !validProviders[p] {
+		// 已接线与否以注册表为准（nil = 不做限制，供纯函数测试使用）。
+		if known != nil && !known(p) {
 			return nil, os.ErrInvalid
 		}
 		if seen[p] {
@@ -74,13 +76,22 @@ func normalizeProviderOrder(in []string) ([]string, error) {
 // enabledProviders 返回当前已接线的 provider（固定顺序，供优先序展示与补齐用）。
 // workbuddy 的本地池总是存在，所以恒在列表首位。
 func (h *Handler) enabledProviders() []string {
-	out := []string{"workbuddy"}
-	if h.cfg.DoubaoChat != nil || h.cfg.DoubaoAdmin != nil {
-		out = append(out, "doubao")
+	out := make([]string, 0, len(h.providers))
+	for _, e := range h.providers {
+		// Chat==nil 表示该家未接线：已知但不启用，不该出现在展示与选路里。
+		if e.Chat == nil {
+			continue
+		}
+		out = append(out, e.Name)
 	}
-	if h.cfg.TraeChat != nil || h.cfg.TraeAdmin != nil {
-		out = append(out, "trae")
-	}
+	// 按 Order 升序：展示顺序不该随 map 迭代抖动。
+	sort.Slice(out, func(i, j int) bool {
+		ei, ej := h.providers[out[i]], h.providers[out[j]]
+		if ei == nil || ej == nil {
+			return out[i] < out[j]
+		}
+		return ei.Order < ej.Order
+	})
 	return out
 }
 
@@ -128,11 +139,16 @@ func (h *Handler) fillProviders(base []string) []string {
 	return out
 }
 
+// isKnownProvider 判断某名字是否已接线（供优先序校验用，替代旧的硬编码白名单）。
+func (h *Handler) isKnownProvider(name string) bool {
+	return h.provider(name) != nil
+}
+
 // SetProviderOrder 设置优先序：先校验，再改内存，最后尽力落盘。
 // 落盘失败不回滚内存——内存已生效，如实返回错误让面板提示「重启后会丢」，
 // 比让用户以为操作没发生要好。
 func (h *Handler) SetProviderOrder(in []string) (persisted bool, err error) {
-	order, nerr := normalizeProviderOrder(in)
+	order, nerr := normalizeProviderOrder(in, h.isKnownProvider)
 	if nerr != nil {
 		return false, nerr
 	}

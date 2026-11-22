@@ -59,6 +59,17 @@ type Config struct {
 			BaseURL string `json:"base_url"` // 默认 http://127.0.0.1:8000
 			APIKey  string `json:"api_key"`  // Trae2api 的 RELAY_API_KEYS；留空=本机免鉴权
 		} `json:"trae"`
+		// CodeArts 华为云码道（进程内，凭据为 STS 四件套 + DPoP 私钥）。
+		// Accounts 指向凭据 JSON；留空则取默认 codearts/accounts.json。
+		CodeArts struct {
+			Enabled  bool   `json:"enabled"`
+			Accounts string `json:"accounts"`
+			// Takeover=true 表示网关**自己持有** refresh_token 并续期。
+			//
+			// ⚠️ refresh_token 一次性轮换：开启后 IDE 手里那份会失效，
+			// 下次打开码道 IDE 需要重新登录。换来的是「不依赖 IDE 存活」。
+			Takeover bool `json:"takeover"`
+		} `json:"codearts"`
 	} `json:"providers"`
 
 	// APIKeys 分组密钥表：每把密钥可绑定若干**业务分组**，请求命中该密钥时只在与

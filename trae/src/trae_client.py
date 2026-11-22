@@ -3778,6 +3778,7 @@ def _model_item(
     endpoints: Optional[list[str]] = None,
     alias_for: str = "",
     capabilities_by_scope: Optional[Mapping[str, Any]] = None,
+    context_window: Optional[int] = None,
 ) -> dict:
     """Build an OpenAI model object with relay discovery metadata.
 
@@ -3809,6 +3810,10 @@ def _model_item(
     }
     if alias_for:
         item["alias_for"] = alias_for
+    # 上下文窗口：只在拿到正数时输出。缺失就不写这个字段 ——
+    # 写 0 会让下游误以为「窗口为零」，比没有更糟。
+    if isinstance(context_window, int) and context_window > 0:
+        item["context_window"] = context_window
     if isinstance(capabilities_by_scope, Mapping) and capabilities_by_scope:
         item["capabilities_by_scope"] = {
             str(scope): dict(capabilities)
@@ -3865,6 +3870,7 @@ def _merge_model_item(
     endpoints: list[str],
     alias_for: str = "",
     capabilities_by_scope: Optional[Mapping[str, Any]] = None,
+    context_window: Optional[int] = None,
 ) -> None:
     """Insert/merge one exact or alias id while retaining endpoint metadata."""
 
@@ -3879,6 +3885,7 @@ def _merge_model_item(
             endpoints=endpoints,
             alias_for=alias_for,
             capabilities_by_scope=capabilities_by_scope,
+            context_window=context_window,
         )
         return
     merged = list(current.get("endpoints") or [])
@@ -3973,6 +3980,9 @@ async def get_models(force: bool = False) -> list[dict]:
                 created,
                 endpoints=endpoints,
                 capabilities_by_scope=capabilities_by_scope,
+                # 上游 descriptor 里带着上下文窗口；透出来才能让网关做长度校验
+                # （否则 trae 在能力矩阵里永远是「未知」，长请求切过来会 4xx）。
+                context_window=descriptor_max_context(config),
             )
             lowered = exact.lower()
             if lowered != exact:
@@ -3984,6 +3994,7 @@ async def get_models(force: bool = False) -> list[dict]:
                     endpoints=endpoints,
                     alias_for=exact,
                     capabilities_by_scope=capabilities_by_scope,
+                    context_window=descriptor_max_context(config),
                 )
     if not items_by_id:
         # Not cached, so the next request retries the upstream list.

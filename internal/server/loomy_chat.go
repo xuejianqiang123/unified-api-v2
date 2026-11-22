@@ -82,11 +82,17 @@ func (p *LoomyProvider) Chat(w http.ResponseWriter, r *http.Request) {
 	var accName, cookie, conv string
 	var resp *http.Response
 	var openErr error
+	// hadAccount 必须单独记：pickAccount 在「唯一账号已被排除」时返回空串，
+	// 若拿它当「有没有账号」的判据，就会把**上游调用失败**误报成
+	// 「未导入账号」——用户明明是登录着的（面板能看到账号与积分）。
+	hadAccount := false
 	for attempt := 0; attempt <= 1; attempt++ {
-		accName, cookie = p.pickAccount(tried)
-		if cookie == "" {
+		name, ck := p.pickAccount(tried)
+		if ck == "" {
 			break
 		}
+		hadAccount = true
+		accName, cookie = name, ck
 		conv = p.convs.Get(sess, req.Model, accName)
 		resp, openErr = p.client.Open(r.Context(), loomypkg.Request{
 			ConversationID: conv,
@@ -99,13 +105,16 @@ func (p *LoomyProvider) Chat(w http.ResponseWriter, r *http.Request) {
 		}
 		tried[accName] = true
 	}
-	if cookie == "" {
+	if !hadAccount {
 		writeOpenAIError(w, http.StatusServiceUnavailable, "loomy_not_logged_in",
 			"未导入 Loomy 账号：面板 → 账号 → Loomy ▾ → 导入本机 Loomy")
 		return
 	}
 	if openErr != nil {
-		writeOpenAIError(w, http.StatusBadGateway, "loomy_upstream", openErr.Error())
+		// 有账号但调用失败：把上游原因原样说出来（模型 id 不对、cookie 失效、
+		// 额度用尽都在这条），不要再指向「没登录」。
+		writeOpenAIError(w, http.StatusBadGateway, "loomy_upstream",
+			"Loomy 上游调用失败（账号 "+accName+"）："+openErr.Error())
 		return
 	}
 	defer resp.Body.Close()

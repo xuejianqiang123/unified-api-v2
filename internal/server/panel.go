@@ -27,7 +27,7 @@ var panelIndexHTML []byte
 // 用途：面板反复出现「改了但页面还是旧样子」的沟通成本，根因往往是浏览器/客户端
 // 加载的是旧页面。顶栏显示构建号后，用户一眼就能判断是否已加载新版本；每次整改
 // 面板就递增一次 hi 标记（r28 = 第 28 轮）。
-const panelBuildStamp = "面板 r30 · 2026-11-21"
+const panelBuildStamp = "面板 r31 · 2026-11-22"
 
 func (h *Handler) panelRoot(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
@@ -118,7 +118,7 @@ func (h *Handler) panelOverview(w http.ResponseWriter, _ *http.Request) {
 	}
 	// 别名统计：自动切换（多 provider + failover）与独立别名各多少。
 	autoAliases, singleAliases := 0, 0
-	for _, a := range h.cfg.Aliases {
+	for _, a := range h.Aliases() {
 		if a.Failover && len(a.Candidates()) > 1 {
 			autoAliases++
 		} else {
@@ -128,14 +128,16 @@ func (h *Handler) panelOverview(w http.ResponseWriter, _ *http.Request) {
 
 	panelJSON(w, http.StatusOK, map[string]any{
 		"service":         "unified-api-v2",
-		"aliases":         len(h.cfg.Aliases),
+		"aliases":         len(h.Aliases()),
 		"selection_mode":  h.cfg.Pool.SelectionMode(),
 		"providers":       h.providerStatus(),
 		"workbuddy":       map[string]any{"total": total, "healthy": healthy, "cooling": cooling, "disabled": disabled, "manual_stopped": manualStopped, "needs_relogin": needsRelogin, "in_flight_full": inFlight, "ok": true},
 		"doubao":          map[string]any{"data": db, "ok": dbStatus == http.StatusOK},
 		"alias_breakdown": map[string]any{"auto": autoAliases, "single": singleAliases},
 		"provider_order":  h.providerOrderView(),
-		"checked_at":      time.Now().Unix(),
+		// 用量：今日/累计（持久化在 data/usage.json，重启不清零）。
+		"usage":      usageGlobal.Snapshot(),
+		"checked_at": time.Now().Unix(),
 	})
 }
 
@@ -221,7 +223,7 @@ func (h *Handler) panelModels(w http.ResponseWriter, _ *http.Request) {
 	autoNames := make([]string, 0, len(all))
 	singleNames := make([]string, 0, len(all))
 	for _, name := range all {
-		a := h.cfg.Aliases[name]
+		a := h.Aliases()[name]
 		if a.Failover && len(a.Candidates()) > 1 {
 			autoNames = append(autoNames, name)
 		} else {
@@ -231,7 +233,7 @@ func (h *Handler) panelModels(w http.ResponseWriter, _ *http.Request) {
 	ordered := append(autoNames, singleNames...)
 	aliases := make([]map[string]any, 0, len(ordered))
 	for i, name := range ordered {
-		a := h.cfg.Aliases[name]
+		a := h.Aliases()[name]
 		// providers 用 Candidates()（含多候选）；provider 保留单值兼容旧前端。
 		// 公共模型（两侧都提供）会以多候选形式返回，前端据此显示 workbuddy|doubao。
 		aliases = append(aliases, map[string]any{
@@ -253,6 +255,7 @@ func (h *Handler) panelLogs(w http.ResponseWriter, _ *http.Request) {
 	db, dbStatus := h.doubaoAdmin(http.MethodGet, "/admin/usage?days=7", nil)
 	panelJSON(w, http.StatusOK, map[string]any{
 		"checkins": checkins, "doubao_usage": db, "doubao_ok": dbStatus == http.StatusOK,
+		"usage": usageGlobal.Snapshot(),
 	})
 }
 
@@ -304,8 +307,21 @@ func (h *Handler) panelCheckinPost(w http.ResponseWriter, r *http.Request) {
 	} else {
 		tr = map[string]any{"ok": false, "err": "Trae 未接线"}
 	}
+	// CodeArts：进程内 provider，签到与 workbuddy 同源（都由 scheduler 的
+	// ExtraCheckins 承担），这里给面板一个即时入口。
+	var ca any
+	if h.cfg.CodeArtsCheckin != nil {
+		kind, credit, msg, err := h.cfg.CodeArtsCheckin(r.Context())
+		ca = map[string]any{
+			"ok": err == nil && kind != "failed", "kind": kind,
+			"credit": credit, "message": msg, "err": errText(err),
+		}
+	} else {
+		ca = map[string]any{"ok": false, "err": "CodeArts 未接线"}
+	}
 	panelJSON(w, http.StatusOK, map[string]any{
-		"workbuddy": wb, "doubao": db, "doubao_ok": dbStatus == http.StatusOK, "trae": tr,
+		"workbuddy": wb, "doubao": db, "doubao_ok": dbStatus == http.StatusOK,
+		"trae": tr, "codearts": ca,
 	})
 }
 
@@ -321,6 +337,16 @@ func (h *Handler) panelCheckinProvider(w http.ResponseWriter, r *http.Request, p
 		panelJSON(w, http.StatusOK, map[string]any{
 			"provider": "workbuddy", "report": rep, "busy": busy, "err": errText(err),
 			"ok": err == nil && !busy,
+		})
+	case "codearts":
+		if h.cfg.CodeArtsCheckin == nil {
+			writeOpenAIError(w, http.StatusServiceUnavailable, "checkin_not_wired", "CodeArts 签到未接线")
+			return
+		}
+		kind, credit, msg, err := h.cfg.CodeArtsCheckin(r.Context())
+		panelJSON(w, http.StatusOK, map[string]any{
+			"provider": "codearts", "kind": kind, "credit": credit, "message": msg,
+			"err": errText(err), "ok": err == nil && kind != "failed",
 		})
 	case "doubao":
 		if h.cfg.DoubaoAdmin == nil {
@@ -454,7 +480,7 @@ func (h *Handler) providerOrderView() map[string]any {
 // 决定的默认顺序」）。简化为出现最多的首候选：配置里所有公共别名应保持一致。
 func (h *Handler) configProviderOrder() []string {
 	counts := map[string]int{}
-	for _, a := range h.cfg.Aliases {
+	for _, a := range h.Aliases() {
 		c := a.Candidates()
 		if len(c) > 0 {
 			counts[c[0]]++
@@ -574,13 +600,27 @@ func (h *Handler) panelAPI(w http.ResponseWriter, r *http.Request) {
 	case p == "/trae/accounts/reorder" && method == http.MethodPost:
 		h.panelTraeReorder(w, r)
 	// Loomy：网关自己管理账号（无外部进程）。凭证来自专用 Edge profile 的登录。
+	case p == "/codearts/accounts" && method == http.MethodGet:
+		h.panelCodeArtsAccounts(w, r)
+	// 导入/刷新：codearts 的凭据来自本机 IDE（或接管模式的 refresh_token），
+	// 没有「用户名密码」可填，所以这里的「添加账号」就是「从 IDE 重新读一次」。
+	case p == "/codearts/import" && method == http.MethodPost:
+		h.panelCodeArtsImport(w, r)
+	case p == "/codearts/login" && method == http.MethodGet:
+		h.panelCodeArtsLogin(w, r)
+	case p == "/codearts/login" && method == http.MethodPost:
+		h.panelCodeArtsLogin(w, r)
 	case p == "/loomy/accounts" && method == http.MethodGet:
 		h.panelLoomyAccounts(w, r)
+	case p == "/loomy/login" && method == http.MethodPost:
+		h.panelLoomyLogin(w, r)
 	case p == "/loomy/import-local" && method == http.MethodPost:
 		h.panelLoomyImportLocal(w, r)
 	case p == "/loomy/remove" && method == http.MethodPost:
 		h.panelLoomyRemove(w, r)
 	// 账号新增：import-local 读本机 Trae 客户端凭证（免跳转），accounts/add 为手动粘贴兜底。
+	case p == "/trae/login-url" && method == http.MethodGet:
+		h.panelTraeLoginURL(w, r)
 	case p == "/trae/import-local" && method == http.MethodPost:
 		h.panelTraeImportLocal(w, r)
 	case p == "/trae/accounts/add" && method == http.MethodPost:

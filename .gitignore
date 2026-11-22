@@ -88,3 +88,9 @@ usage_checkin.jsonl
 # 一次性调试产物（例如扫码验证时的二维码图片）
 /qr_web.png
 
+
+# ===== codearts provider =====
+# codearts/accounts.json 含华为云 STS 四件套 + DPoP 私钥（等价于账号密码），绝不能入库
+/codearts/
+
+/tmp/*

@@ -97,7 +97,11 @@ var wbActivity = newActivityStore(activityCap)
 //
 // 历史名称 recordWBActivity 保留为别名：它原先只服务 WorkBuddy，加入豆包/Trae 后
 // 若继续只从 WB 埋点写入，面板的「请求日志」就会缺这两家的数据。
-func recordActivity(e activityEntry) { wbActivity.add(e) }
+func recordActivity(e activityEntry) {
+	wbActivity.add(e)
+	// token 用量不在这里记：改由分发层扫描响应体统一累加（覆盖所有 provider），
+	// 这里再加一次会与它双计。
+}
 
 func recordWBActivity(e activityEntry) { recordActivity(e) }
 
