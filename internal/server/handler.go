@@ -142,6 +142,15 @@ type Config struct {
 	// 以 /admin/doubao/ 前缀转发，路径去掉前缀后交给它自己的 mux；nil 时不注册路由。
 	DoubaoAdmin http.Handler
 
+	// TraeChat Trae provider 的聊天入口（HTTP 反代到 Trae2api，独立 Python 进程）。
+	// nil 时 trae 别名回 503；不内嵌实现的原因见 trae.go 顶部注释。
+	TraeChat func(http.ResponseWriter, *http.Request)
+	// LoomyChat loomy provider 的聊天入口（进程内，凭证由网关自己管理）。
+	// nil 时 loomy 别名回 503。
+	LoomyChat func(http.ResponseWriter, *http.Request)
+	// TraeAdmin Trae 的管理代理（账号列表、启停、删除、签到）。nil 时面板相关端点回 503。
+	TraeAdmin *TraeClient
+
 	// PanelEnabled 统一面板开关。开启后由本进程在单端口提供 /api/panel/* 与 /。
 	PanelEnabled bool
 	// PanelAuth 面板 Basic Auth，格式 "user:pass"。空 = 不鉴权（仅限本机绑定）。

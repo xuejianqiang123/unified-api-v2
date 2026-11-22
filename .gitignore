@@ -54,6 +54,10 @@ docs/
 # 下游密钥存储：dbserver 首次启动自动生成，内含明文 sk- 密钥，绝不入库
 keys.json
 
+# 内化的 doubao provider 运行配置：config.json 含 api_keys/admin_token，
+# accounts.json 含完整登录 Cookie，两者都绝不能入库
+/doubao2api/
+
 # 网关二进制与 Windows 编辑器备份文件
 *.exe
 *.exe~
@@ -67,4 +71,20 @@ usage_checkin.jsonl
 *.bak
 *.bak-*
 *.bak.*
+
+# ===== loomy provider =====
+# loomy/accounts.json 含完整 loomy_web_session Cookie（等价于账号密码），
+# conversations.json 含上游会话 ID，两者都是运行期数据，绝不入库。
+/loomy/
+
+# ===== vendor 进来的 Trae provider =====
+# 只提交源码（src/ 与依赖清单）；虚拟环境 53MB，data/ 含账号与缓存。
+/trae/.venv/
+/trae/data/
+
+# 计划任务备份（导出的 XML 含启动命令与工作目录）
+/task-backup/
+
+# 一次性调试产物（例如扫码验证时的二维码图片）
+/qr_web.png
 

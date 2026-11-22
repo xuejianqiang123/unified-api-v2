@@ -93,7 +93,13 @@ func (s *activityStore) snapshot(n int) []activityEntry {
 var wbActivity = newActivityStore(activityCap)
 
 // recordWBActivity 由 chatStat.done() 调用；不在其它位置重复埋点，避免双计。
-func recordWBActivity(e activityEntry) { wbActivity.add(e) }
+// recordActivity 通用活动记录入口（三个 provider 共用同一个环形缓冲）。
+//
+// 历史名称 recordWBActivity 保留为别名：它原先只服务 WorkBuddy，加入豆包/Trae 后
+// 若继续只从 WB 埋点写入，面板的「请求日志」就会缺这两家的数据。
+func recordActivity(e activityEntry) { wbActivity.add(e) }
+
+func recordWBActivity(e activityEntry) { recordActivity(e) }
 
 // displayAccount 账号展示标签：有昵称用 "昵称(uid8)"，否则只给 uid8（不泄露完整 uid）。
 func displayAccount(uid, nick string) string {

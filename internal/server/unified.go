@@ -253,6 +253,48 @@ func (h *Handler) dispatchUnifiedAlias(w http.ResponseWriter, r *http.Request, b
 		h.cfg.DoubaoChat(w, r2)
 		return newBody, true, model
 
+	case "trae":
+		// 单 provider 路径与大统一路径（callProvider）是两段独立分发，
+		// 新增 provider 时两处都要接——漏一处只会在这条路径上报 501。
+		if h.cfg.TraeChat == nil {
+			writeOpenAIError(w, http.StatusServiceUnavailable, "provider_unavailable",
+				"trae provider 未接线：检查 providers.trae.enabled 与 Trae2api 是否在线")
+			return newBody, true, model
+		}
+		rewritten, err := rewriteModelInBody(body, alias.Model)
+		if err != nil {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "重写模型名失败: "+err.Error())
+			return newBody, true, model
+		}
+		r2 := r.Clone(r.Context())
+		r2.Body = io.NopCloser(bytes.NewReader(rewritten))
+		r2.ContentLength = int64(len(rewritten))
+		r2.Header = r.Header.Clone()
+		r2.Header.Set("X-Unified-Alias", model)
+		h.cfg.TraeChat(w, r2)
+		return newBody, true, model
+
+	case "loomy":
+		if h.cfg.LoomyChat == nil {
+			writeOpenAIError(w, http.StatusServiceUnavailable, "provider_unavailable",
+				"loomy provider 未接线：检查启动日志与 loomy/accounts.json")
+			return newBody, true, model
+		}
+		rewritten, err := rewriteModelInBody(body, alias.Model)
+		if err != nil {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "重写模型名失败: "+err.Error())
+			return newBody, true, model
+		}
+		r2 := r.Clone(r.Context())
+		r2.Body = io.NopCloser(bytes.NewReader(rewritten))
+		r2.ContentLength = int64(len(rewritten))
+		r2.Header = r.Header.Clone()
+		r2.Header.Set("X-Unified-Alias", model)
+		// 会话键：loomy 要按会话复用 conversationId，与豆包同源。
+		r2.Header.Set(HeaderSessionID, doubaoSessionID(r))
+		h.cfg.LoomyChat(w, r2)
+		return newBody, true, model
+
 	case "workbuddy", "":
 		rewritten, err := rewriteModelInBody(body, alias.Model)
 		if err != nil {
@@ -268,52 +310,98 @@ func (h *Handler) dispatchUnifiedAlias(w http.ResponseWriter, r *http.Request, b
 	}
 }
 
-// providerStatus 供 /status 展示两个 provider 的健康度；未接线时省略对应字段。
+// providerStatus 供 /status 与面板展示各 provider 的健康度与别名归属。
 //
-// aliases 的口径曾引起误解：公共模型由两侧共同提供，6 个公共别名会同时计入
-// 两个 provider，于是两栏都显示 8。这里额外给出 aliases_public / aliases_own，
-// 让「公共共享 6 + 各自独有 2」一目了然。
+// aliases 口径（曾引起误解）：公共模型由多侧共同提供，同名别名会同时计入每一侧，
+// 所以两栏可能都显示同一个数字。这里额外给出 aliases_public（该 provider 参与的
+// 公共别名数）与 aliases_own（仅该 provider 提供的别名数），让归属一目了然。
+//
+// 统计必须通用而非按"是否含 workbuddy"硬编码：加了 trae 之后，存在只含
+// doubao+trae 的公共别名，旧判断会把它错算成 workbuddy 的独有别名。
 func (h *Handler) providerStatus() map[string]any {
 	out := map[string]any{}
-	if len(h.cfg.Aliases) > 0 {
-		public, wbOwn, dbOwn := 0, 0, 0
-		for _, a := range h.cfg.Aliases {
-			hasWB, hasDB := false, false
-			for _, p := range a.Candidates() {
-				if p == "doubao" {
-					hasDB = true
-				} else {
-					hasWB = true
-				}
-			}
-			switch {
-			case hasWB && hasDB:
-				public++
-			case hasDB:
-				dbOwn++
-			default:
-				wbOwn++
-			}
+	if len(h.cfg.Aliases) == 0 {
+		return out
+	}
+	type stat struct{ public, own int }
+	stats := map[string]*stat{}
+	at := func(p string) *stat {
+		s := stats[p]
+		if s == nil {
+			s = &stat{}
+			stats[p] = s
 		}
-		wh, wt := 0, 0
-		if h.cfg.Pool != nil {
-			wt, wh, _, _, _ = h.cfg.Pool.CountsDetailed()
-		}
-		out["workbuddy"] = map[string]any{
-			"aliases": public + wbOwn, "aliases_public": public, "aliases_own": wbOwn,
-			"healthy": wh, "total": wt,
-		}
-		if h.cfg.DoubaoHealth != nil {
-			healthy, total := h.cfg.DoubaoHealth()
-			out["doubao"] = map[string]any{
-				"aliases": public + dbOwn, "aliases_public": public, "aliases_own": dbOwn,
-				"healthy": healthy, "total": total,
-			}
-		} else {
-			out["doubao"] = map[string]any{
-				"aliases": public + dbOwn, "aliases_public": public, "aliases_own": dbOwn,
+		return s
+	}
+	for _, a := range h.cfg.Aliases {
+		seen := map[string]bool{}
+		for _, p := range a.Candidates() {
+			if p != "" {
+				seen[p] = true
 			}
 		}
+		switch len(seen) {
+		case 0:
+			continue
+		case 1:
+			for p := range seen {
+				at(p).own++
+			}
+		default:
+			for p := range seen {
+				at(p).public++
+			}
+		}
+	}
+
+	// WorkBuddy：总是输出（即使 0 别名，面板也用它显示本地号池健康）。
+	wh, wt := 0, 0
+	if h.cfg.Pool != nil {
+		wt, wh, _, _, _ = h.cfg.Pool.CountsDetailed()
+	}
+	wbs, wbOK := stats["workbuddy"]
+	if !wbOK {
+		wbs = &stat{}
+	}
+	out["workbuddy"] = map[string]any{
+		"aliases": wbs.public + wbs.own, "aliases_public": wbs.public, "aliases_own": wbs.own,
+		"healthy": wh, "total": wt,
+	}
+
+	// 豆包：未接线时仍给出别名归属，但不带健康数（未知不等于 0 健康）。
+	ds, dOK := stats["doubao"]
+	if !dOK {
+		ds = &stat{}
+	}
+	dbItem := map[string]any{
+		"aliases": ds.public + ds.own, "aliases_public": ds.public, "aliases_own": ds.own,
+	}
+	if h.cfg.DoubaoHealth != nil {
+		healthy, total := h.cfg.DoubaoHealth()
+		dbItem["healthy"] = healthy
+		dbItem["total"] = total
+	}
+	out["doubao"] = dbItem
+
+	// Trae：外部进程，健康度用带缓存的 /healthz 探测；未接线时不出现在状态表。
+	if h.cfg.TraeChat != nil || h.cfg.TraeAdmin != nil {
+		ts, tOK := stats["trae"]
+		if !tOK {
+			ts = &stat{}
+		}
+		item := map[string]any{
+			"aliases": ts.public + ts.own, "aliases_public": ts.public, "aliases_own": ts.own,
+		}
+		if h.cfg.TraeAdmin != nil {
+			// 面板「Trae 控制台」入口需要知道它的地址（登录/OAuth 只能在那边完成）。
+			item["base_url"] = h.cfg.TraeAdmin.BaseURL()
+			if ok := h.cfg.TraeAdmin.PingCached(context.Background()); ok {
+				item["healthy"], item["total"] = 1, 1
+			} else {
+				item["healthy"], item["total"] = 0, 1
+			}
+		}
+		out["trae"] = item
 	}
 	return out
 }

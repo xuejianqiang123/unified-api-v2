@@ -39,18 +39,30 @@ func TestPanelUIIsnapshot(t *testing.T) {
 	html := string(panelIndexHTML)
 	// 用户 2026-11-21 明确要求的内容必须在页面里。
 	want := []string{
-		"实时使用",              // 概览：替代原「账号健康摘要」
-		"优先级控制",             // Provider 行内入口 + 弹窗
-		"openPrio(",         // 入口必须真的接到函数
-		"renderRecent(",     // 请求流水渲染
-		"最近请求",              // 请求日志页首屏
-		"按模型汇总",             // 日志页：模型维度
-		"按账号汇总",             // 账号页：管理与运行合表后的副标题（原号池页标题，合并后保留）
-		"客户端接入",             // 接入页：凭证块（原「密钥」页）
-		"全局别名表",             // 接入页：别名表（原「模型别名」页）
-		"对话测试台",             // 概览页：原「测试台」页并入
-		`id="task-checkin"`, // 概览页：原「任务」页签到表并入
-		"setMode(",          // 模式切换
+		"实时使用",                               // 概览：替代原「账号健康摘要」
+		"优先级控制",                              // Provider 行内入口 + 弹窗
+		"renderRecent(",                      // 请求流水渲染
+		"最近请求",                               // 请求日志页首屏
+		"按模型汇总",                              // 日志页：模型维度
+		"按账号汇总",                              // 账号页：管理与运行合表后的副标题（原号池页标题，合并后保留）
+		"客户端接入",                              // 接入页：凭证块（原「密钥」页）
+		"全局别名表",                              // 接入页：别名表（原「模型别名」页）
+		"对话测试台",                              // 概览页：原「测试台」页并入
+		`id="task-checkin"`,                  // 概览页：原「任务」页签到表并入
+		"导入本机 Trae",                          // 账号页：从本机客户端读凭证入池（不跳外部控制台）
+		"导入本机豆包",                             // 账号页：从豆包客户端读 cookie 入池
+		"importDoubaoLocal(",                 // 账号页：对应处理器必须接线
+		"removeDoubaoAcc(",                   // 账号页：豆包账号彻底删除（含 accounts.json）
+		"accounts/db/remove",                 // 账号页：删除端点必须接线
+		"trae/accounts/add",                  // 账号页：手动粘贴 JWT 兜底
+		"当前状态",                               // 概览：Trae 无签到历史，时间列显式标注为当前状态
+		`<option value="trae">Trae</option>`, // 日志页：Provider 筛选含 Trae
+		"ov-providers-hint",                  // 概览：选号模式并入说明行
+		`id="acc-mode-btn"`,                  // 账号页：选号模式开关（原概览「账号优先级」列承载）
+		"cycleMode(",                         // 账号页：选号模式切换处理器
+		"updateModeBtn(",                     // 账号页：按钮文案随真实模式刷新
+		"onProvDrop(",                        // 概览：Provider 行拖拽排序
+		"trae/accounts/reorder",              // 账号页：Trae 拖拽排序的代理端点
 	}
 	for _, w := range want {
 		if !strings.Contains(html, w) {
@@ -74,6 +86,16 @@ func TestPanelUIIsnapshot(t *testing.T) {
 		`data-v="tasks"`,  // 独立「任务」导航与视图
 		"alias_breakdown", // 已删「全局别名」卡片的数据字段（改用此判据，避免误伤接入页「全局别名表」）
 		"需关注",             // 已删的第二张卡片标题
+		// 2026-11-22 用户质疑「设置页存在的意义」：只读 JSON 快照与别处重复，已删除。
+		`data-v="settings"`,
+		`id="settings-json"`,
+		"setProviderFirst", // 已删的「豆包优先/WorkBuddy 优先」按钮处理器（拖拽替代）
+		"账号优先级",            // 已删的概览列（操作都在账号页）
+		"openPrio(",        // 已删的优先级控制弹窗（拖拽替代）
+		"setMode(",         // 已删的模式切换（改由 cycleMode 承担）
+		`id="ov-porder"`,   // 已删的「X 优先」徽标（与顺序列重复）
+		`id="ov-mode"`,     // 已删的「选号：优先级」徽标（并入说明行）
+		"运行配置快照",
 	}
 	for _, n := range notWant {
 		if strings.Contains(html, n) {

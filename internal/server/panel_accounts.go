@@ -26,15 +26,15 @@ import (
 
 // oauthSession 一次 WorkBuddy OAuth 会话（进程内，单会话串行）。
 type oauthSession struct {
-	Realm  string
-	At     time.Time
+	Realm   string
+	At      time.Time
 	AuthURL string
 }
 
 var (
-	oauthMu     sync.Mutex
-	oauthSess   *oauthSession
-	oauthTTL    = 5 * time.Minute
+	oauthMu   sync.Mutex
+	oauthSess *oauthSession
+	oauthTTL  = 5 * time.Minute
 )
 
 // wbCredential 兼容两类输入：
@@ -363,26 +363,6 @@ func (h *Handler) upsertDBCookieFile(name, cookie, note string) error {
 	return os.Rename(tmp, path)
 }
 
-// panelDBQR POST/GET /api/panel/accounts/db/qr/*
-// 转发 provider 原生扫码端点。注意：provider 未配置 qr 时返回 501/错误，
-// 且此前实测确认阶段 expired（provider 已知限制），失败时如实透出。
-func (h *Handler) panelDBQR(w http.ResponseWriter, r *http.Request) {
-	if h.cfg.DoubaoAdmin == nil {
-		writeOpenAIError(w, http.StatusServiceUnavailable, "provider_unavailable", "doubao provider 未启用")
-		return
-	}
-	sub := strings.TrimPrefix(r.URL.Path, "/api/panel/accounts/db/qr")
-	target := "/admin/accounts/qr" + sub
-	var payload []byte
-	if r.Body != nil {
-		payload, _ = io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	}
-	out, status := h.doubaoAdmin(r.Method, target, payload)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = w.Write(mustJSON(out))
-}
-
 func mustJSON(v any) []byte {
 	raw, err := json.Marshal(v)
 	if err != nil {
@@ -424,4 +404,34 @@ func (h *Handler) panelAccountOrder(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeOpenAIError(w, http.StatusBadRequest, "bad_provider", "未知 provider: "+body.Provider)
 	}
+}
+
+// panelDBImportLocal POST /api/panel/accounts/db/import-local
+//
+// 从本机豆包客户端读登录态并写入号池，替代"抓包复制 cookie"。
+// 前置条件（客户端必须退出）由 provider 侧判断并返回可操作的中文错误，
+// 这里只做转发，不重复解释。
+func (h *Handler) panelDBImportLocal(w http.ResponseWriter, r *http.Request) {
+	if h.cfg.DoubaoAdmin == nil {
+		writeOpenAIError(w, http.StatusServiceUnavailable, "provider_unavailable", "doubao provider 未启用")
+		return
+	}
+	out, status := h.doubaoAdmin(http.MethodPost, "/admin/accounts/import-local", nil)
+	panelJSON(w, status, out)
+}
+
+// panelDBRemove POST /api/panel/accounts/db/remove
+// body {"name":"..."}：彻底删除豆包账号（内存 + 池 + accounts.json）。
+func (h *Handler) panelDBRemove(w http.ResponseWriter, r *http.Request) {
+	if h.cfg.DoubaoAdmin == nil {
+		writeOpenAIError(w, http.StatusServiceUnavailable, "provider_unavailable", "doubao provider 未启用")
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "bad_request", "读取请求体失败: "+err.Error())
+		return
+	}
+	out, status := h.doubaoAdmin(http.MethodPost, "/admin/accounts/remove", body)
+	panelJSON(w, status, out)
 }

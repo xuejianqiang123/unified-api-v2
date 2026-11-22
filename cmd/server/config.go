@@ -52,6 +52,13 @@ type Config struct {
 			Config   string `json:"config"`   // doubao2api 的 config.json 路径
 			Accounts string `json:"accounts"` // doubao2api 的 accounts.json 路径
 		} `json:"doubao"`
+		// Trae 外部反代（Trae2api-cn，Python 进程）。网关只做 HTTP 转发，
+		// 不内嵌其账号/OAuth/风控逻辑。
+		Trae struct {
+			Enabled bool   `json:"enabled"`
+			BaseURL string `json:"base_url"` // 默认 http://127.0.0.1:8000
+			APIKey  string `json:"api_key"`  // Trae2api 的 RELAY_API_KEYS；留空=本机免鉴权
+		} `json:"trae"`
 	} `json:"providers"`
 
 	// APIKeys 分组密钥表：每把密钥可绑定若干**业务分组**，请求命中该密钥时只在与

@@ -19,7 +19,7 @@ import (
 )
 
 // validProviders 允许出现在优先序里的 provider 名（与 UnifiedAlias 的取值一致）。
-var validProviders = map[string]bool{"workbuddy": true, "doubao": true}
+var validProviders = map[string]bool{"workbuddy": true, "doubao": true, "trae": true}
 
 // providerOrderPref 优先序的内存视图 + 持久化路径。
 // path 为空 = 不落盘（测试或未配置），只在本进程生效。
@@ -71,7 +71,24 @@ func normalizeProviderOrder(in []string) ([]string, error) {
 	return out, nil
 }
 
-// Order 返回当前优先序的副本；nil 表示未设置（调用方按配置原序处理）。
+// enabledProviders 返回当前已接线的 provider（固定顺序，供优先序展示与补齐用）。
+// workbuddy 的本地池总是存在，所以恒在列表首位。
+func (h *Handler) enabledProviders() []string {
+	out := []string{"workbuddy"}
+	if h.cfg.DoubaoChat != nil || h.cfg.DoubaoAdmin != nil {
+		out = append(out, "doubao")
+	}
+	if h.cfg.TraeChat != nil || h.cfg.TraeAdmin != nil {
+		out = append(out, "trae")
+	}
+	return out
+}
+
+// ProviderOrder 返回当前优先序的副本；nil 表示未设置（调用方按配置原序处理）。
+//
+// 注意：这里**不做**「补齐已接线 provider」。orderCandidates 用它重排真实请求，
+// 补齐会让未设置偏好时也产生一个非空顺序，从而覆盖别名自身的配置顺序。
+// 展示层需要补齐请用 fillProviders。
 func (h *Handler) ProviderOrder() []string {
 	if h.provOrder == nil {
 		return nil
@@ -83,6 +100,31 @@ func (h *Handler) ProviderOrder() []string {
 	}
 	out := make([]string, len(h.provOrder.order))
 	copy(out, h.provOrder.order)
+	return out
+}
+
+// fillProviders 在给定顺序末尾补齐「已接线但未列出」的 provider。
+//
+// 场景：provider_order.json 是加入 trae 之前写的（只有 doubao/workbuddy），
+// 若原样展示，面板就少一行，表现为「新接的 Trae 看不见」。补齐只影响展示与
+// 面板上的顺序编辑，真实路由顺序仍以别名配置 + orderCandidates 为准。
+func (h *Handler) fillProviders(base []string) []string {
+	out := append([]string{}, base...)
+	for _, p := range h.enabledProviders() {
+		found := false
+		for _, q := range out {
+			if q == p {
+				found = true
+				break
+			}
+		}
+		if !found {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
 	return out
 }
 

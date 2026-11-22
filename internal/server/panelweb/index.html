@@ -47,8 +47,11 @@ table{width:100%;border-collapse:collapse;font-size:13px}
 th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:middle}
 th{color:var(--dim);font-weight:500;font-size:12px}
 tr:last-child td{border-bottom:0}
+/* 注意：这里不能给 .mono 加 display:inline-block —— 账号列是 <td class="mono">，
+   inline-block 会让单元格脱离表格布局，表现为该列内容相对表头上移、宽度失配。 */
 .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--dim);
-  word-break:break-all;max-width:380px;display:inline-block}
+  word-break:break-word}
+td.mono{max-width:320px}
 input,textarea,select{background:#0d131a;border:1px solid var(--line);color:var(--fg);
   border-radius:8px;padding:8px 10px;font:inherit;width:100%}
 textarea{min-height:88px;font-family:ui-monospace,monospace;font-size:12px}
@@ -67,6 +70,15 @@ pre{background:#0d131a;border:1px solid var(--line);border-radius:10px;padding:1
 .tag{font-size:11px;padding:1px 7px;border-radius:6px;background:#1b2430;color:var(--dim)}
 .tag.wb{background:rgba(88,166,255,.14);color:var(--blue)}
 .tag.db{background:rgba(63,185,80,.14);color:var(--accent)}
+.tag.trae{background:rgba(188,140,255,.16);color:#c9a0ff}
+/* 下拉菜单：账号页按 provider 分组，避免一排七个按钮 */
+.dd{position:relative;display:inline-block}
+.dd-menu{display:none;position:absolute;right:0;top:calc(100% + 6px);z-index:60;min-width:156px;
+  background:#0f151c;border:1px solid var(--line);border-radius:8px;padding:4px;
+  box-shadow:0 10px 28px rgba(0,0,0,.45)}
+.dd.open .dd-menu{display:block}
+.dd-menu a{display:block;padding:8px 10px;border-radius:6px;cursor:pointer;font-size:13px;color:var(--fg);white-space:nowrap}
+.dd-menu a:hover{background:#1b2430}
 #toast{position:fixed;right:20px;bottom:20px;z-index:99;display:flex;flex-direction:column;gap:8px}
 .toast{background:#18212c;border:1px solid var(--line);border-left:3px solid var(--accent);
   padding:10px 14px;border-radius:8px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.4)}
@@ -131,7 +143,6 @@ tr.drag-row.drag-over td{border-top:2px solid var(--accent)}
       <a data-v="accounts"><i>◉</i>账号</a>
       <a data-v="access"><i>⚿</i>接入</a>
       <a data-v="logs"><i>≡</i>请求日志</a>
-      <a data-v="settings"><i>ⓘ</i>设置</a>
     </nav>
     <div class="sidefoot">unified-api-v2 · <span id="foot-port">—</span>
       <button class="ghost" style="display:block;width:100%;margin-top:10px;padding:5px 8px;font-size:11px" onclick="doLogout()">退出登录</button>
@@ -150,15 +161,11 @@ tr.drag-row.drag-over td{border-top:2px solid var(--accent)}
       <div class="grid cards" id="ov-cards"></div>
       <div class="panel">
         <div class="panel-h">
-          <span>Provider 与路由 <span class="pill prio" id="ov-porder">—</span> <span class="pill prio" id="ov-mode">—</span></span>
-          <span class="row" style="gap:6px">
-            <button class="ghost" onclick="setProviderFirst('doubao',this)">豆包优先</button>
-            <button class="ghost" onclick="setProviderFirst('workbuddy',this)">WorkBuddy 优先</button>
-          </span>
+          <span>Provider 与路由</span>
         </div>
         <div class="panel-b" style="padding:0">
           <table id="ov-providers"></table>
-          <div class="hint" style="padding:0 16px 10px;margin:0">顺序＝自动路由先试哪一侧（首字节前失败才切另一侧）；「优先级控制」＝同一侧内部先挑哪个账号。</div>
+          <div class="hint" id="ov-providers-hint" style="padding:0 16px 10px;margin:0">顺序＝自动路由先试哪一侧（首字节前失败才切另一侧，可直接拖拽行调整）。</div>
         </div>
       </div>
       <div class="panel">
@@ -186,16 +193,11 @@ tr.drag-row.drag-over td{border-top:2px solid var(--accent)}
       <!-- 原「任务」页并入概览 -->
       <div class="panel"><div class="panel-h"><span>签到 <span class="small muted" id="checkin-next"></span></span>
         <span class="row" style="gap:6px">
-          <button class="ghost" onclick="askCheckinProvider('workbuddy')">仅 WorkBuddy</button>
-          <button class="ghost" onclick="askCheckinProvider('doubao')">仅豆包</button>
           <button class="ghost" onclick="askCheckin()">全部账号</button>
         </span></div>
         <div class="panel-b" style="padding:0">
-          <div class="small muted" style="padding:8px 16px 4px">WorkBuddy 执行记录（最新在前）</div>
-          <table id="task-checkin"></table>
-          <div class="small muted" style="padding:10px 16px 4px">豆包签到记录（最新在前）</div>
-          <table id="task-checkin-db"></table>
-          <div class="hint" style="padding:0 16px 10px;margin:0">已签到的账号幂等返回；豆包额度见账号页与请求日志。</div>
+          <div class="scroll"><table id="task-checkin"></table></div>
+          <div class="hint" style="padding:0 16px 10px;margin:0">三家流水按时间倒序合并：WorkBuddy 是每次批量执行一条，豆包与 Trae 是每账号每次一条。已签到的账号幂等返回。</div>
         </div></div>
       <div class="panel"><div class="panel-h"><span>WorkBuddy 专属任务 <span class="tag wb">6 项</span></span></div>
         <div class="panel-b"><div class="row" id="task-buttons"></div>
@@ -206,10 +208,34 @@ tr.drag-row.drag-over td{border-top:2px solid var(--accent)}
     <section data-v="accounts" hidden>
       <div class="panel"><div class="panel-h"><span>账号 <span class="small muted">按账号汇总 · 管理 + 运行</span></span>
         <span class="row" style="gap:6px;flex-wrap:wrap">
-          <button class="ghost" onclick="openWBImport()">WB JSON 导入</button>
-          <button class="ghost" onclick="openWBOAuth()">WB OAuth</button>
-          <button class="ghost" onclick="openDBCookie()">豆包 Cookie</button>
-          <button class="ghost" onclick="openDBQR()">豆包扫码</button>
+          <span class="dd" id="dd-wb">
+            <button class="ghost" onclick="toggleDD('dd-wb')">WorkBuddy ▾</button>
+            <div class="dd-menu">
+              <a onclick="closeDD();openWBImport()">JSON 导入</a>
+              <a onclick="closeDD();openWBOAuth()">OAuth 登录</a>
+            </div>
+          </span>
+          <span class="dd" id="dd-db">
+            <button class="ghost" onclick="toggleDD('dd-db')">豆包 ▾</button>
+            <div class="dd-menu">
+              <a onclick="closeDD();openDBCookie()">粘贴 Cookie</a>
+              <a onclick="closeDD();importDoubaoLocal(this)">导入本机豆包</a>
+            </div>
+          </span>
+          <span class="dd" id="dd-trae">
+            <button class="ghost" onclick="toggleDD('dd-trae')">Trae ▾</button>
+            <div class="dd-menu">
+              <a onclick="closeDD();openTraeToken()">粘贴凭证</a>
+              <a onclick="closeDD();importTraeLocal(this)">导入本机 Trae</a>
+            </div>
+          </span>
+          <span class="dd" id="dd-loomy">
+            <button class="ghost" onclick="toggleDD('dd-loomy')">Loomy ▾</button>
+            <div class="dd-menu">
+              <a onclick="closeDD();importLoomyLocal(this)">导入本机 Loomy</a>
+            </div>
+          </span>
+          <button class="ghost" id="acc-mode-btn" onclick="cycleMode(this)">选号：—</button>
         </span></div>
         <div class="panel-b" style="padding:0"><div class="scroll"><table id="acc-all"></table></div>
           <div class="hint" style="padding:0 16px 10px;margin:0">拖拽限同一 Provider 内，即存顺序；停用只影响选号，不动凭证。请求列为进程内环形缓冲，重启清零；豆包积分列为额度（hover 看口径）。</div>
@@ -230,7 +256,7 @@ tr.drag-row.drag-over td{border-top:2px solid var(--accent)}
     <section data-v="logs" hidden>
       <div class="panel"><div class="panel-h"><span>最近请求 <span class="small muted" id="log-window"></span></span>
         <select id="log-filter" style="width:auto" onchange="renderLogRecent()">
-          <option value="">全部 Provider</option><option value="workbuddy">WorkBuddy</option><option value="doubao">豆包</option>
+          <option value="">全部 Provider</option><option value="workbuddy">WorkBuddy</option><option value="doubao">豆包</option><option value="trae">Trae</option>
         </select></div>
         <div class="panel-b" style="padding:0"><div class="scroll"><table id="log-recent"></table></div>
           <div class="hint" style="padding:0 16px 12px;margin:0">时间 / Provider / 模型（别名 → 上游真名）/ 账号 / 状态 / 耗时 / token。</div>
@@ -241,10 +267,6 @@ tr.drag-row.drag-over td{border-top:2px solid var(--accent)}
         <div class="panel-b" style="padding:0"><table id="log-usage"></table></div></div>
     </section>
 
-    <section data-v="settings" hidden>
-      <div class="panel"><div class="panel-h">运行配置快照</div>
-        <div class="panel-b"><pre id="settings-json">—</pre></div></div>
-    </section>
   </main>
 </div>
 <div id="toast"></div>
@@ -283,7 +305,11 @@ function post(path,body){return api(path,{method:'POST',body:JSON.stringify(body
 async function doLogout(){try{await post('/logout',{});}catch(e){}location.href='/login';}
 
 function badge(text,cls){return '<span class="pill '+cls+'">'+esc(text)+'</span>';}
-function tag(provider){return '<span class="tag '+(provider==='doubao'?'db':'wb')+'">'+esc(provider)+'</span>';}
+function tag(provider){
+  // 三个 provider 各用一色，避免 trae 落到默认分支与 workbuddy 同色而混淆。
+  const cls=provider==='doubao'?'db':(provider==='trae'?'trae':'wb');
+  return '<span class="tag '+cls+'">'+esc(provider)+'</span>';
+}
 function emptyRow(cols,msg){return '<tr><td colspan="'+cols+'" class="empty">'+esc(msg)+'</td></tr>';}
 
 function goView(v){
@@ -302,7 +328,7 @@ function refreshView(){loadView(currentView);}
 
 function loadView(v){
   ({overview:loadOverview,accounts:loadAccounts,access:loadAccess,
-    logs:loadLogs,settings:loadSettings})[v]?.();
+    logs:loadLogs})[v]?.();
 }
 
 /* ---------- 实时使用 / 请求日志：公共格式化 ---------- */
@@ -345,42 +371,58 @@ function renderRecent(el,rows,limit){
 
 async function loadOverview(){
   try{
+    // 侧栏底部的端口显示原来由已删除的「设置」页填充，改在这里落一次。
+    document.getElementById('foot-port').textContent=location.host||'—';
     const [d,act]=await Promise.all([api('/overview'),api('/activity')]);
     const wb=d.workbuddy||{},db=(d.doubao||{}).data||{};
     document.getElementById('health').textContent='已连接';
     document.getElementById('health').className='pill ok';
-    // 卡片只留两张 Provider 健康度。别名明细归「接入」页；
-    // 手动停用 / 待重登录在「账号」页逐账号可见，卡片只是重复计数，均不在此渲染。
-    document.getElementById('ov-cards').innerHTML=[
+    // 卡片只留 Provider 健康度：三个 provider 各一张。别名明细归「接入」页，
+    // 手动停用 / 待重登录在「账号」页逐账号可见，均不在此重复计数。
+    const cards=[
       ['WorkBuddy 健康',wb.healthy,'/ '+(wb.total??0)],
       ['豆包健康',db.healthy,'/ '+(db.total??0)],
-    ].map(([k,v,s])=>'<div class="card"><div class="k">'+esc(k)+'</div><div class="v">'+esc(v)+'<small>'+esc(s)+'</small></div></div>').join('');
+    ];
+    const traeSt=(d.providers||{}).trae;
+    if(traeSt){
+      // Trae 是外部进程：healthy 由 /healthz 探测给出（在线 1 / 离线 0），total 固定 1。
+      cards.push(['Trae 健康',traeSt.healthy??0,'/ '+(traeSt.total??0)]);
+    }
+    document.getElementById('ov-cards').innerHTML=cards
+      .map(([k,v,s])=>'<div class="card"><div class="k">'+esc(k)+'</div><div class="v">'+esc(v)+'<small>'+esc(s)+'</small></div></div>').join('');
     // 选号模式直接取 pool 的实际状态（act.selection_mode），不在前端另存一份。
+    // 标题栏不再放「X 优先」「选号：优先级」两个徽标：前者与表格顺序列重复，
+    // 后者并到说明行，避免标题堆状态。
     const mode=act.selection_mode||d.selection_mode||'weighted';
-    const mEl=document.getElementById('ov-mode');
-    mEl.textContent=mode==='priority'?'选号：优先级':'选号：加权随机';
-    mEl.className='pill '+(mode==='priority'?'prio':'warn');
+    const hintEl=document.getElementById('ov-providers-hint');
+    if(hintEl){
+      hintEl.textContent='顺序＝自动路由先试哪一侧（首字节前失败才切另一侧，可直接拖拽行调整）；'
+        +'「选号：'+(mode==='priority'?'优先级':'加权随机')+'」的切换与账号级优先级都在「账号」页。';
+    }
     // 路由顺序与 Provider 明细合并为一张表：原「路由优先级」+「Provider 状态」两块重复展示同一批 Provider。
-    const po=d.provider_order||{},order=po.order||['doubao','workbuddy'];
-    const el=document.getElementById('ov-porder');
-    el.textContent=(order[0]==='doubao'?'豆包':'WorkBuddy')+' 优先';
+    const po=d.provider_order||{},order=po.order||['doubao','workbuddy','trae'];
     const p=d.providers||{},infl=act.in_flight||{};
     const rows=order.map((n,i)=>{
-      const x=p[n]||{};const ok=n==='workbuddy'||(x.total||0)>0;
-      const ctl=ok?'<button class="ghost" onclick="openPrio(\''+n+'\')">优先级控制</button>':'<span class="small muted">未启用</span>';
-      // 公共别名两侧共用，不能相加理解；显式拆「公共 / 独有」。
+      const x=p[n]||{};
+      const healthy=Number(x.healthy||0), total=Number(x.total||0);
+      // workbuddy 是本地池，接线即在线；外部 provider 以健康数为准（total>0 但 healthy=0 = 全部不可用）。
+      const online=n==='workbuddy'?true:healthy>0;
       const ali=x.aliases_public!=null?esc(x.aliases_public)+' / '+esc(x.aliases_own??0):esc(x.aliases??'—');
-      return '<tr><td class="tbl-num mono">'+(i+1)+'</td><td>'+tag(n)+'</td>'+
+      // Provider 行可拖拽：顺序决定自动路由先试哪一侧，用户要求直接在这里排。
+      return '<tr class="prow" draggable="true" data-provider="'+esc(n)+'" style="cursor:move"'+
+        ' ondragstart="onProvDragStart(event)" ondragover="onProvDragOver(event)"'+
+        ' ondragleave="onProvDragLeave(event)" ondrop="onProvDrop(event)" ondragend="onProvDragEnd(event)">'+
+        '<td class="tbl-num mono">'+(i+1)+'</td><td>'+tag(n)+'</td>'+
         '<td class="mono">'+ali+'</td>'+
-        '<td>'+badge(String(x.healthy??'—'),'ok')+' <span class="small muted">/ '+esc(x.total??0)+'</span></td>'+
+        '<td>'+badge(String(healthy),'ok')+' <span class="small muted">/ '+esc(total)+'</span></td>'+
         '<td class="tbl-num">'+esc(infl[n]??0)+'</td>'+
-        '<td>'+badge(ok?'在线':'未启用',ok?'ok':'bad')+'</td><td>'+ctl+'</td></tr>';
+        '<td>'+badge(online?'在线':(total>0?'异常':'未启用'),online?'ok':'bad')+'</td></tr>';
     }).join('')+
-      '<tr><td colspan="7" class="small muted" style="padding:6px 12px">顺序来源：'+
+      '<tr><td colspan="6" class="small muted" style="padding:6px 12px">顺序来源：'+
       esc(po.source==='override'?'已保存的运行时偏好':'来自别名配置')+'</td></tr>';
     document.getElementById('ov-providers').innerHTML=
-      '<tr><th style="width:52px">顺序</th><th>Provider</th><th>别名（公共 / 独有）</th>'+
-      '<th>健康 / 总数</th><th class="tbl-num">在途</th><th>状态</th><th>账号优先级</th></tr>'+rows;
+      '<tr><th style="width:76px;white-space:nowrap">顺序</th><th>Provider</th><th>别名（公共 / 独有）</th>'+
+      '<th>健康 / 总数</th><th class="tbl-num">在途</th><th>状态</th></tr>'+rows;
     // 实时使用：近 5 分钟吞吐（在途已在 Provider 表逐行给出，此处不再重复）。
     const l5=(act.last5m||{});
     const req5=(l5.workbuddy?.requests??0)+(l5.doubao?.requests??0);
@@ -401,94 +443,8 @@ async function loadOverview(){
 }
 
 /* ---------- Provider 路由优先序（概览页控件） ---------- */
-// 与「账号优先级」是两件事：这里决定自动路由别名先试豆包还是先试 WorkBuddy；
-// 账号优先级决定同一 provider 内部先挑哪个账号。
-async function setProviderFirst(first,btn){
-  if(btn)btn.disabled=true;
-  try{
-    const r=await post('/provider-order',{first});
-    toast((first==='doubao'?'已设为豆包优先':'已设为 WorkBuddy 优先')+(r.persisted?'（已落盘）':'（仅本次运行）'));
-    loadOverview();
-  }catch(e){toast(e.message,true);}finally{if(btn)btn.disabled=false;}
-}
-
-/* ---------- 优先级控制（运行时切换模式 + 组内排序） ---------- */
-let prioState=null;
-async function openPrio(provider){
-  try{
-    const [accs,ov]=await Promise.all([api('/accounts'),api('/overview')]);
-    const mode=ov.selection_mode||'weighted';
-    let items=[];
-    if(provider==='workbuddy'){
-      items=(accs.workbuddy||[]).map(a=>({id:a.uid,
-        label:(a.nickname?a.nickname+' · ':'')+String(a.uid||'').slice(0,8),
-        priority:a.priority||0,in_flight:a.in_flight||0,
-        disabled:!!(a.disabled||a.manual_disabled),cooling:!!a.cooling}));
-    }else{
-      const stats=((ov.doubao||{}).data||{}).accounts||[];
-      const meta=((accs.doubao||{}).accounts)||[];
-      const notes={};meta.forEach(a=>{notes[a.name]=a.note;});
-      items=(stats.length?stats:meta).map(s=>({id:s.name,
-        label:(s.name||'—')+(notes[s.name]?' · '+notes[s.name]:''),
-        priority:s.priority||0,in_flight:s.in_flight||0,
-        disabled:!!s.disabled,cooling:!!s.cooling}));
-    }
-    // 0 = 未排序（新加入）→ 排到最后，避免把「未排序」误读成「最高优先级」。
-    items.sort((a,b)=>((a.priority||1e9)-(b.priority||1e9)));
-    prioState={provider,mode,items};
-    document.getElementById('dlg-title').textContent=(provider==='workbuddy'?'WorkBuddy':'豆包')+' · 优先级控制';
-    renderPrio();
-    document.getElementById('acct-mask').classList.add('on');
-  }catch(e){toast(e.message,true);}
-}
-function renderPrio(){
-  if(!prioState)return;
-  const {mode,items}=prioState;
-  const rows=items.length?items.map((it,i)=>
-    '<div class="plist-row"><span class="idx">'+(i+1)+'</span><span class="nm"><span class="t">'+esc(it.label)+'</span>'+
-    (it.disabled?badge('停用','bad'):'')+(it.cooling?badge('冷却','warn'):'')+
-    (it.in_flight?'<span class="pill ok">在途 '+esc(it.in_flight)+'</span>':'')+
-    '</span><span class="mv">'+
-    '<button class="ghost" onclick="movePrio('+i+',-1)" '+(i===0?'disabled':'')+'>↑</button>'+
-    '<button class="ghost" onclick="movePrio('+i+',1)" '+(i===items.length-1?'disabled':'')+'>↓</button>'+
-    '</span></div>').join(''):emptyRow(1,'该 Provider 无账号');
-  document.getElementById('dlg-body').innerHTML=
-    '<div class="note">当前选号模式：<b>'+(mode==='priority'?'优先级（严格按序号选号）':'加权随机（排序不参与选号）')+'</b><br>'+
-      '模式切换即时生效但不写 config.json；重启后按配置文件的 pool.selection_mode 恢复。</div>'+
-    '<div class="row" style="gap:8px"><button class="ghost" onclick="setMode(\'weighted\')">加权随机</button>'+
-      '<button class="ghost" onclick="setMode(\'priority\')">优先级</button></div>'+
-    '<div class="plist">'+rows+'</div>'+
-    '<div class="hint" style="margin:0">序号 1 最优先。点 ↑↓ 调整，「未排序」= 新加入且未参与排序，仅在已排序账号不可用时才轮到。</div>';
-  document.getElementById('dlg-foot').innerHTML='<button class="ghost" onclick="closeDlg()">取消</button>'+
-    '<button onclick="savePrio()" '+(items.length?'':'disabled')+'>保存排序</button>';
-}
-function movePrio(i,dir){
-  if(!prioState)return;
-  const items=prioState.items,j=i+dir;
-  if(j<0||j>=items.length)return;
-  const t=items[i];items[i]=items[j];items[j]=t;
-  renderPrio();
-}
-async function setMode(mode){
-  try{
-    const r=await post('/pool/mode',{mode});
-    prioState.mode=r.mode;
-    renderPrio();
-    toast('选号模式已切换为 '+r.mode+'（本次运行生效）');
-    loadOverview();
-  }catch(e){toast(e.message,true);}
-}
-async function savePrio(){
-  if(!prioState)return;
-  const {provider,items}=prioState;
-  try{
-    await post('/accounts/order',{provider,names:items.map(i=>i.id)});
-    toast('优先级已保存');
-    closeDlg();
-    loadOverview();
-    if(currentView==='accounts')loadAccounts();
-  }catch(e){toast(e.message,true);}
-}
+// 注意区分两件事：本节的顺序决定自动路由先试哪一侧；「选号模式」（优先级/加权随机）
+// 决定同一 provider 内部怎么挑账号，开关已移到「账号」页标题栏。
 
 // dragRow 返回 <tr> 的属性串（**不含结尾的 >**）。
 // 调用方写法固定为 '<tr'+dragRow(...)+'>...'；若此处再带一个 '>'，
@@ -506,11 +462,23 @@ function prioBadge(p){return '<span class="pill prio">'+(p&&p>0?esc(p):'—')+'<
 //        + /activity（实时状态、窗口统计、最近活动）；豆包额度由 refreshQuota() 异步回填。
 async function loadAccounts(){
   try{
-    const [d,p,act]=await Promise.all([api('/accounts'),api('/pool').catch(()=>({})),api('/activity').catch(()=>({}))]);
+    const [d,p,act,tr,lm]=await Promise.all([
+      api('/accounts'),
+      api('/pool').catch(()=>({})),
+      api('/activity').catch(()=>({})),
+      // Trae 是外部反代进程，账号/签到/积分由它自己维护；取不到时整页照常渲染。
+      api('/trae/accounts').catch(()=>({})),
+      // Loomy 凭证由网关自己管理（loomy/accounts.json），没有外部进程。
+      api('/loomy/accounts').catch(()=>({})),
+    ]);
     // 运行数据按 provider|account 索引（activity.account 与 acctLabel 口径一致）。
     const run={};
     ((act.accounts)||[]).forEach(a=>{run[a.provider+'|'+a.account]=a;});
     // WorkBuddy 额度/冷却按 acctLabel 索引。
+    // 选号模式（优先级/加权随机）在这里初始化：概览那列账号级操作删除后，
+    // 开关只在账号页标题栏，需要一个刷新时同步真实状态的入口。
+    window.__selMode=(act&&act.selection_mode)||window.__selMode||'weighted';
+    updateModeBtn();
     const wbMeta={};
     (((p.workbuddy||{}).accounts)||[]).forEach(a=>{
       wbMeta[acctLabel(a.uid,a.nickname)]={credits:a.credits,cool:a.cool_remaining_sec||0,cf:a.consecutive_fails||0};
@@ -529,6 +497,37 @@ async function loadAccounts(){
         // 豆包额度是上游 commerce 查询，异步回填，先占位。
         credit:'<span class="small muted">…</span>',cool:0,cf:null,run:run['doubao|'+a.name]||{}});
     });
+    // Loomy 账号：网关照 cookie 单账号调用，暂无轮询与额度接口。
+    ((lm.accounts)||[]).forEach((a,i)=>{
+      const ts=a.created_at?new Date(a.created_at*1000).toLocaleString():'—';
+      rows.push({provider:'loomy',id:a.name,label:(a.name||'—'),
+        tip:(a.note||'')+' · 导入于 '+ts,
+        priority:i+1,disabled:false,cooling:false,
+        credit:(a.permanent!=null && !a.credit_err)
+          ? (Number(a.permanent).toLocaleString()+(a.daily!=null?' <span class="small muted">/'+Number(a.daily)+'</span>':''))
+          : '<span class="small muted" title="'+(a.credit_err||'未查询')+'">—</span>',
+        cool:0,cf:null,run:run['loomy|'+a.name]||{}});
+    });
+    // Trae 账号：provider 内部自己轮询与签到，因此没有网关侧优先级/在途/窗口统计。
+    if(tr.base_url)window.__traeBase=tr.base_url;
+    ((tr.accounts)||[]).forEach((a,i)=>{
+      const cr=a.account_credits||{};
+      // 导入账号会覆盖记录、清空权益缓存；此时 remaining 缺失，不能当成 0 显示。
+      const hasCredit=(cr.remaining!=null)||(a.credits!=null);
+      const rem=Number(cr.remaining!=null?cr.remaining:a.credits);
+      const valid=a.is_valid!==false, enabled=a.model_enabled!==false;
+      rows.push({provider:'trae',id:a.id,label:(a.label||a.id||'—'),
+        tip:(a.source?a.source+' · ':'')+(a.id||''),
+        // 顺序号＝Trae2api 当前轮询顺序（accounts.json 的字典序）；拖拽会通过
+        // /trae/accounts/reorder 改写它，所以这里显示真实序号而不是「—」。
+        priority:i+1,
+        disabled:(!valid||!enabled),cooling:false,
+        credit:!valid?'<span class="small muted" title="凭证失效">—</span>'
+          :(hasCredit?esc(Math.round(rem*10)/10)
+            :'<span class="small muted" title="权益缓存已清空，刷新后由上游回填">待刷新</span>'),
+        cool:0,cf:null,run:{},
+        trae:{checkin:!!a.checked_in,enabled:enabled,valid:valid}});
+    });
 
     document.getElementById('acc-all').innerHTML=
       '<tr><th>拖拽</th><th>Provider</th><th>账号</th><th class="tbl-num">优先级</th><th class="tbl-num">积分</th>'+
@@ -536,28 +535,216 @@ async function loadAccounts(){
       '<th class="tbl-num">成功</th><th class="tbl-num">失败</th><th class="tbl-num">连续失败</th>'+
       '<th class="tbl-num">平均耗时</th><th>最近活动</th><th>操作</th></tr>'+
       (rows.length?rows.map(r=>{
-        const st=r.disabled?badge('已停用','bad'):(r.cooling?badge('冷却中','warn'):badge('健康','ok'));
+        const isTrae=r.provider==='trae';
+        const st=isTrae
+          ? (r.trae.valid===false?badge('凭证失效','bad'):(r.trae.enabled?badge('健康','ok'):badge('已停用','bad')))
+          : (r.disabled?badge('已停用','bad'):(r.cooling?badge('冷却中','warn'):badge('健康','ok')));
         const qattr=r.provider==='doubao'?' data-qprov="doubao" data-qacc="'+esc(r.id||'')+'"':'';
-        return '<tr'+dragRow(r.provider,r.id)+'>'+
-          '<td><span class="drag-handle">⠿</span></td>'+
+        const trOpen='<tr'+dragRow(r.provider,r.id)+'>';
+        const dragCell='<td><span class="drag-handle">⠿</span></td>';
+        const toggleBtn='<button class="ghost" onclick="toggleAcc(\''+r.provider+'\',\''+esc(r.id||'')+'\',this)">'+(r.disabled?'启用':'停用')+'</button>';
+        // 删除能力不对称：Trae 与豆包有后端删除端点，WorkBuddy 目前只能停用。
+        // 删除能力：豆包与 Loomy 有后端删除端点；WorkBuddy 只能停用。
+        const delBtn=(r.provider==='doubao')
+          ? ' <button class="ghost" onclick="removeDoubaoAcc(\''+esc(r.id||'')+'\',this)">删除</button>'
+          : (r.provider==='loomy'
+              ? ' <button class="ghost" onclick="removeLoomyAcc(\''+esc(r.id||'')+'\',this)">删除</button>'
+              : '');
+        const ops=isTrae
+          ? '<button class="ghost" onclick="toggleTraeAcc(\''+esc(r.id||'')+'\','+(r.trae.enabled?1:0)+',this)">'+(r.trae.enabled?'停用':'启用')+'</button> '+
+            '<button class="ghost" onclick="checkinTrae(\''+esc(r.id||'')+'\',this)">签到</button> '+
+            '<button class="ghost" onclick="removeTraeAcc(\''+esc(r.id||'')+'\',this)">删除</button>'
+          : toggleBtn+delBtn;
+        const lastCell=isTrae
+          ? '<span class="small '+(r.trae.checkin?'muted':'muted')+'">签到 '+(r.trae.checkin?'已签':'未签')+'</span>'
+          : esc(fmtTime(r.run.last_at));
+        const numCell=v=>'<td class="tbl-num">'+v+'</td>';
+        return trOpen+
+          dragCell+
           '<td>'+tag(r.provider)+'</td>'+
           '<td class="mono" title="'+esc(r.tip||'')+'">'+esc(r.label)+'</td>'+
           '<td class="tbl-num">'+prioBadge(r.priority)+'</td>'+
           '<td class="tbl-num"'+qattr+'>'+r.credit+'</td>'+
           '<td>'+st+'</td>'+
           '<td class="tbl-num">'+(r.cool?esc(r.cool)+'s':'—')+'</td>'+
-          '<td class="tbl-num">'+(r.run.in_flight?'<span class="pill ok">'+esc(r.run.in_flight)+'</span>':'0')+'</td>'+
-          '<td class="tbl-num">'+esc(r.run.requests||0)+'</td>'+
-          '<td class="tbl-num">'+esc(r.run.ok||0)+'</td>'+
-          '<td class="tbl-num">'+esc(r.run.fail||0)+'</td>'+
+          numCell(r.run.in_flight?'<span class="pill ok">'+esc(r.run.in_flight)+'</span>':'0')+
+          numCell(esc(r.run.requests||0))+
+          numCell(esc(r.run.ok||0))+
+          numCell(esc(r.run.fail||0))+
           '<td class="tbl-num">'+(r.cf?esc(r.cf):'—')+'</td>'+
           '<td class="tbl-num">'+(r.run.requests?esc(fmtDur(r.run.avg_ms)):'—')+'</td>'+
-          '<td class="small muted">'+esc(fmtTime(r.run.last_at))+'</td>'+
-          '<td><button class="ghost" onclick="toggleAcc(\''+r.provider+'\',\''+esc(r.id||'')+'\',this)">'+(r.disabled?'启用':'停用')+'</button></td>'+
+          '<td class="small muted">'+lastCell+'</td>'+
+          '<td>'+ops+'</td>'+
           '</tr>';
       }).join(''):emptyRow(15,'无账号'));
     refreshQuota();
   }catch(e){toast(e.message,true);}
+}
+
+// importDoubaoLocal 从本机豆包客户端读登录态入池（需先完全退出客户端）。
+// Windows 会独占 Cookies 文件，未退出时后端返回明确提示，这里不静默重试。
+async function importDoubaoLocal(btn){
+  if(btn)btn.disabled=true;
+  try{
+    const r=await post('/accounts/db/import-local',{});
+    const list=r.imported||[];
+    let msg='已导入 '+list.length+' 个豆包账号：'+list.map(x=>x.name+'('+x.profile+')').join('、');
+    if(r.skipped&&r.skipped.length)msg+='；跳过：'+r.skipped.join('；');
+    toast(msg,list.length===0);
+    loadAccounts();
+  }catch(e){toast(e.message,true);}finally{if(btn)btn.disabled=false;}
+}
+// importLoomyLocal 从专用 Edge profile 读 loomy_web_session。
+// 前置：先运行 tools\loomy-login.ps1 登录并关闭窗口（Windows 会锁 Cookies 文件）。
+async function importLoomyLocal(btn){
+  if(btn)btn.disabled=true;
+  try{
+    const r=await post('/loomy/import-local',{});
+    toast('已导入 Loomy 账号：'+(r.added?'新增':'更新')+'（cookie '+r.cookie_len+' 字节）');
+  }catch(e){
+    toast(e.message,true);
+  }finally{if(btn)btn.disabled=false;}
+}
+
+// removeLoomyAcc 彻底删除 Loomy 账号（连 accounts.json 记录一起）。
+async function removeLoomyAcc(name,btn){
+  if(!confirm('确认删除 Loomy 账号「'+name+'」？\n\n会从 loomy/accounts.json 移除；需要恢复时重新走一次登录 + 导入。'))return;
+  if(btn)btn.disabled=true;
+  try{
+    const r=await post('/loomy/remove',{name:name});
+    toast('已删除：'+r.removed+'（剩余 '+r.total+' 个）');
+    loadAccounts();
+  }catch(e){toast(e.message,true);}finally{if(btn)btn.disabled=false;}
+}
+
+// removeDoubaoAcc 彻底删除豆包账号（连 accounts.json 记录一起），用于清理重复号。
+async function removeDoubaoAcc(name,btn){
+  if(!confirm('确认彻底删除豆包账号「'+name+'」？\n\n会同时从 accounts.json 移除，重启后不会回来；仅停用请用「停用」。'))return;
+  if(btn)btn.disabled=true;
+  try{
+    await post('/accounts/db/remove',{name:name});
+    toast('已删除：'+name);loadAccounts();
+  }catch(e){toast(e.message,true);}finally{if(btn)btn.disabled=false;}
+}
+
+/* ---------- 账号页：按 provider 分组的下拉菜单 ---------- */
+function toggleDD(id){
+  document.querySelectorAll('.dd.open').forEach(d=>{if(d.id!==id)d.classList.remove('open');});
+  const el=document.getElementById(id);
+  if(el)el.classList.toggle('open');
+}
+function closeDD(){
+  document.querySelectorAll('.dd.open').forEach(d=>d.classList.remove('open'));
+}
+// 点空白处关闭；菜单项自己调 closeDD。
+document.addEventListener('click',e=>{
+  if(!e.target.closest('.dd'))closeDD();
+});
+
+/* ---------- 选号模式切换（账号页标题栏） ---------- */
+async function cycleMode(btn){
+  const cur=window.__selMode||'weighted';
+  const next=cur==='priority'?'weighted':'priority';
+  if(btn)btn.disabled=true;
+  try{
+    const r=await post('/pool/mode',{mode:next});
+    window.__selMode=(r&&r.mode)||next;
+    updateModeBtn();
+    toast('选号模式：'+(window.__selMode==='priority'?'优先级（严格按顺序）':'加权随机')+'（本次运行生效，重启回配置默认）');
+    loadAccounts();
+  }catch(e){toast(e.message,true);}finally{if(btn)btn.disabled=false;}
+}
+function updateModeBtn(){
+  const b=document.getElementById('acc-mode-btn');
+  if(!b)return;
+  const m=window.__selMode||'weighted';
+  b.textContent='选号：'+(m==='priority'?'优先级':'加权随机');
+}
+
+/* ---------- Trae 账号操作（代理到 Trae2api） ---------- */
+// importTraeLocal 从本机已登录的 Trae 客户端读取凭证并写入账号池。
+// 不跳外部控制台：Go 侧解密 storage.json，再 POST 给 Trae2api 的 /api/web-auth。
+async function importTraeLocal(btn){
+  if(btn)btn.disabled=true;
+  try{
+    const r=await post('/trae/import-local',{});
+    if(r&&r.success===false){toast('导入未成功：'+(r.error||'请检查本机 Trae 是否已登录'),true);return;}
+    toast('已导入本机 Trae 账号'+(r&&r.edition?('（'+r.edition+'）'):''));
+    loadAccounts();
+  }catch(e){toast(e.message,true);}finally{if(btn)btn.disabled=false;}
+}
+// openTraeToken 手动粘贴 Cloud-IDE-JWT 的兜底入口（本机未登录时用）。
+function openTraeToken(){
+  openDlg('添加 Trae 账号',
+    '<div class="hint" style="margin:0 0 10px">优先用「导入本机 Trae」自动读取；本机未登录时再粘贴网页版 Cloud-IDE-JWT。</div>'+
+    '<label class="small muted">Cloud-IDE-JWT</label>'+
+    '<textarea id="trae-token" placeholder="eyJhbGciOi..."></textarea>'+
+    '<label class="small muted" style="display:block;margin-top:10px">备注（可选）</label>'+
+    '<input id="trae-label" placeholder="例如 main">',
+    '<button class="ghost" onclick="closeDlg()">取消</button><button onclick="submitTraeToken(this)">添加</button>');
+}
+async function submitTraeToken(btn){
+  const token=(document.getElementById('trae-token').value||'').trim();
+  if(!token){toast('请粘贴 token',true);return;}
+  if(btn)btn.disabled=true;
+  try{
+    const r=await post('/trae/accounts/add',{token:token,label:(document.getElementById('trae-label').value||'').trim()});
+    if(r&&r.success===false){toast('添加失败：'+(r.error||''),true);return;}
+    toast('Trae 账号已添加');closeDlg();loadAccounts();
+  }catch(e){toast(e.message,true);}finally{if(btn)btn.disabled=false;}
+}
+async function toggleTraeAcc(id,enabled,btn){
+  if(btn)btn.disabled=true;
+  try{
+    await post('/trae/accounts/model-enabled',{account_id:id,enabled:!enabled});
+    toast(!enabled?'已启用该 Trae 账号的模型请求':'已停用该 Trae 账号的模型请求');
+    loadAccounts();
+  }catch(e){toast(e.message,true);}finally{if(btn)btn.disabled=false;}
+}
+async function checkinTrae(id,btn){
+  if(btn)btn.disabled=true;
+  try{
+    const r=await post('/trae/checkin/'+encodeURIComponent(id),{});
+    const bad=(r&&r.success===false);
+    toast(bad?('Trae 签到未成功：'+(r.error||'请查看 Trae 控制台')):'Trae 签到完成',bad);
+    loadAccounts();
+  }catch(e){toast(e.message,true);}finally{if(btn)btn.disabled=false;}
+}
+async function removeTraeAcc(id,btn){
+  if(!confirm('确认从 Trae 账号池删除该账号？\n\n账号：'+id+'\n删除后需在 Trae2api 控制台重新登录才能恢复，已产生的用量记录不受影响。'))return;
+  if(btn)btn.disabled=true;
+  try{
+    await post('/trae/accounts/remove',{account_id:id});
+    toast('已删除该 Trae 账号');loadAccounts();
+  }catch(e){toast(e.message,true);}finally{if(btn)btn.disabled=false;}
+}
+
+/* ---------- Provider 与路由：行拖拽调整优先序 ---------- */
+let provDragSrc=null;
+function onProvDragStart(e){provDragSrc=e.currentTarget;e.currentTarget.classList.add('dragging');if(e.dataTransfer)e.dataTransfer.effectAllowed='move';}
+function onProvDragOver(e){e.preventDefault();if(e.currentTarget!==provDragSrc)e.currentTarget.classList.add('drag-over');}
+function onProvDragLeave(e){e.currentTarget.classList.remove('drag-over');}
+function onProvDragEnd(e){
+  e.currentTarget.classList.remove('dragging');
+  document.querySelectorAll('#ov-providers tr').forEach(tr=>tr.classList.remove('drag-over'));
+}
+async function onProvDrop(e){
+  e.preventDefault();
+  const target=e.currentTarget;
+  target.classList.remove('drag-over');
+  if(!provDragSrc||provDragSrc===target)return;
+  const tbody=target.parentNode;
+  const rows=Array.from(tbody.querySelectorAll('tr.prow'));
+  const fromIdx=rows.indexOf(provDragSrc),toIdx=rows.indexOf(target);
+  if(fromIdx<0||toIdx<0)return;
+  if(fromIdx<toIdx)target.parentNode.insertBefore(provDragSrc,target.nextSibling);
+  else target.parentNode.insertBefore(provDragSrc,target);
+  const order=Array.from(tbody.querySelectorAll('tr.prow')).map(r=>r.dataset.provider);
+  try{
+    await post('/provider-order',{order:order});
+    toast('Provider 优先序已更新');
+    loadOverview();
+  }catch(err){toast(err.message,true);loadOverview();}
 }
 
 let dragSrc=null;
@@ -599,7 +786,12 @@ async function onDrop(e){
     .map(r=>r.dataset.id);
   // 拖拽即时生效，不弹确认（用户 2026-11-21 要求）；失败自动回滚 UI。
   try{
-    await post('/accounts/order',{provider:provider,names:ids});
+    if(provider==='trae'){
+      // Trae 的号池在它自己的进程里，顺序通过 Trae2api 的 /api/accounts/reorder 改写。
+      await post('/trae/accounts/reorder',{order:ids});
+    }else{
+      await post('/accounts/order',{provider:provider,names:ids});
+    }
     toast('优先级已更新');loadAccounts();
   }catch(err){toast(err.message,true);loadAccounts();}
 }
@@ -641,8 +833,9 @@ function setQuotaCells(q){
       return;
     }
     const rem=Number(it.remaining||0),tot=Number(it.total||0),used=Number(it.used||0);
-    const txt=(Math.round(rem*10)/10)+'*';
-    const tip='豆包额度：剩余 '+rem+' / 总量 '+tot+'（已用 '+used+'）\n* 与 WorkBuddy 积分口径不同';
+    // 不在数字后加星号：口径差异放 title 与表头提示，数字本身要能直接读。
+    const txt=String(Math.round(rem*10)/10);
+    const tip='豆包额度：剩余 '+rem+' / 总量 '+tot+'（已用 '+used+'）\n与 WorkBuddy 积分口径不同，不可直接相加';
     td.innerHTML='<span title="'+esc(tip)+'">'+esc(txt)+'</span>';
   });
 }
@@ -739,65 +932,102 @@ async function loadLogs(){
 // 原「豆包专属任务」整块只有签到一个动作，与签到块重复，已合并为同一组按钮。
 async function loadTasks(){
   try{
-    const [c,p]=await Promise.all([api('/checkin'),api('/pool')]);
-    // 状态行：两个 Provider 各报各的。此前只渲染 workbuddy.next，豆包的每日时点被丢掉。
+    const [c,p,tr]=await Promise.all([
+      api('/checkin'),api('/pool'),
+      // Trae 只提供当前签到状态（上游不落历史），取不到不影响另两家展示。
+      api('/trae/accounts').catch(()=>({})),
+    ]);
+    // 状态行：三家各报各的时点。
     const wbNext=(c.workbuddy||{}).next, dbS=c.doubao||{};
-    document.getElementById('checkin-next').textContent=[
+    const parts=[
       wbNext?'WB 下次 '+new Date(wbNext).toLocaleString():'WB 未配置自动签到',
-      dbS.enabled?'豆包每日 '+(dbS.hour??9)+':00 自动签到':'豆包未启用自动签到',
-    ].join(' · ');
+      dbS.enabled?'豆包每日 '+(dbS.hour??9)+':00':'豆包未启用自动签到',
+    ];
+    const traeAccs=(tr.accounts)||[];
+    if(traeAccs.length){
+      const signed=traeAccs.filter(a=>a.checked_in).length;
+      parts.push('Trae 今日已签 '+signed+'/'+traeAccs.length);
+    }
+    document.getElementById('checkin-next').textContent=parts.join(' · ');
 
-    // WorkBuddy 执行记录：统一按开始时间倒序（最新在前），不依赖后端返回顺序。
-    const recs=(((p.workbuddy||{}).checkins)||[]).slice()
-      .sort((a,b)=>new Date(b.started_at||0)-new Date(a.started_at||0));
-    document.getElementById('task-checkin').innerHTML=
-      '<tr><th>开始</th><th>结束</th><th class="tbl-num">耗时</th><th class="tbl-num">成功</th>'+
-      '<th class="tbl-num">已签</th><th class="tbl-num">失败</th><th class="tbl-num">跳过</th></tr>'+
-      (recs.length?recs.slice(0,20).map(r=>{
-        const s=r.started_at?new Date(r.started_at):null,e=r.finished_at?new Date(r.finished_at):null;
-        const dur=(s&&e&&!isNaN(s)&&!isNaN(e))?fmtDur(e-s):'—';
-        return '<tr><td class="small muted">'+esc(fmtTime(r.started_at))+'</td>'+
-          '<td class="small muted">'+esc(fmtTime(r.finished_at))+'</td>'+
-          '<td class="tbl-num">'+esc(dur)+'</td>'+
-          '<td class="tbl-num">'+esc(r.ok??'—')+'</td><td class="tbl-num">'+esc(r.already??'—')+'</td>'+
-          '<td class="tbl-num">'+esc(r.fail??'—')+'</td><td class="tbl-num">'+esc(r.skipped??'—')+'</td></tr>';
-      }).join(''):emptyRow(7,'暂无签到记录'));
-
-    // 豆包签到记录：优先读持久化历史（usage_checkin.jsonl，已被后端倒序）；
-    // 端点不可用时回退内存快照（每账号最新一条，重启即失）。
+    // 三家流水合并为一张表，按时间倒序。
+    // 语义差异必须保留：WorkBuddy 是「每次批量执行一条」，豆包与 Trae 是「每账号每次一条」，
+    // 所以 WB 行的「账号/批次」写「全部账号」，结果列给四个计数。
+    const rows=[];
+    (((p.workbuddy||{}).checkins)||[]).forEach(r=>{
+      const st=r.started_at?new Date(r.started_at):null,en=r.finished_at?new Date(r.finished_at):null;
+      const okAt=st&&!isNaN(st);
+      const dur=(st&&en&&!isNaN(st)&&!isNaN(en))?fmtDur(en-st):'—';
+      rows.push({at:okAt?st.getTime():0,provider:'workbuddy',target:'全部账号',
+        result:'<span class="small">成功 '+esc(r.ok??0)+' · 已签 '+esc(r.already??0)+
+               ' · 失败 '+esc(r.fail??0)+' · 跳过 '+esc(r.skipped??0)+'</span>',
+        detail:'—',dur:dur});
+    });
     let dres=((c.doubao_log||{}).records)||[];
     if(!dres.length)dres=(dbS.results)||[];
-    dres=dres.slice().sort((a,b)=>(b.ts||0)-(a.ts||0));
-    const stMap={ok:['成功','ok'],already:['已签','warn'],no_campaign:['无活动','warn'],error:['失败','bad']};
-    document.getElementById('task-checkin-db').innerHTML=
-      '<tr><th>账号</th><th>结果</th><th>奖励</th><th>连续天数</th><th>说明</th><th>时间</th></tr>'+
-      (dres.length?dres.map(r=>{
-        const m=stMap[r.status]||[r.status||'—','warn'];
-        return '<tr><td class="mono">'+esc(r.name||'—')+'</td>'+
-          '<td>'+badge(m[0],m[1])+'</td>'+
-          '<td>'+esc(r.reward||'—')+'</td>'+
-          '<td class="tbl-num">'+esc(r.days||'—')+'</td>'+
-          '<td class="small muted">'+esc(r.message||'—')+'</td>'+
-          '<td class="small muted">'+esc(fmtTS(r.ts))+'</td></tr>';
-      }).join(''):emptyRow(6,'本次运行还没有豆包签到结果'));
+    dres.forEach(r=>{
+      rows.push({at:Number(r.ts||0)*1000,provider:'doubao',target:r.name||'—',
+        result:ckBadge(r.status),detail:ckDetail(r),dur:'—'});
+    });
+    // Trae 上游不保留签到历史，只能给「当前状态」：at=0 使其排在表尾，
+    // 时间列由渲染层显示为「当前状态」而不是伪造一个时间。
+    traeAccs.forEach(a=>{
+      const cr=a.account_credits||{};
+      const credits=(cr.remaining!=null)?Math.round(Number(cr.remaining)*10)/10
+                                        :(a.credits!=null?a.credits:null);
+      rows.push({at:0,provider:'trae',target:a.label||a.id||'—',
+        result:a.checked_in?badge('今日已签','ok'):badge('今日未签','warn'),
+        detail:credits!=null?('剩余 '+credits+' 积分'):'—',dur:'—'});
+    });
+    rows.sort((a,b)=>b.at-a.at);
+    const top=rows.slice(0,30);
+    document.getElementById('task-checkin').innerHTML=
+      '<tr><th style="width:150px">时间</th><th style="width:110px">Provider</th><th>账号 / 批次</th>'+
+      '<th style="width:240px">结果</th><th>明细</th><th class="tbl-num" style="width:80px">耗时</th></tr>'+
+      (top.length?top.map(r=>'<tr>'+
+        '<td class="small muted">'+esc(r.at?fmtTime(new Date(r.at).toISOString()):'当前状态')+'</td>'+
+        '<td>'+tag(r.provider)+'</td>'+
+        '<td class="mono">'+esc(r.target)+'</td>'+
+        '<td>'+r.result+'</td>'+
+        '<td class="small muted">'+esc(r.detail)+'</td>'+
+        '<td class="tbl-num">'+esc(r.dur)+'</td></tr>').join(''):emptyRow(6,'暂无签到记录'));
   }catch(e){toast(e.message,true);}
 }
-
-async function askCheckinProvider(provider){
-  const label=provider==='workbuddy'?'WorkBuddy':'豆包';
-  if(!confirm('确认对「'+label+'」账号单独签到？\n\n只影响该 provider，已签到的账号幂等返回。'))return;
-  try{const d=await post('/checkin/'+provider);
-    if(d.ok){toast(label+' 签到成功');}else{toast(label+' 签到未成功：'+(d.err||'请查看详情'),true);}
-    loadTasks();}catch(e){toast(e.message,true);}
+// ckBadge 签到状态 → 徽标（豆包与 Trae 的 status 取值一致）。
+function ckBadge(st){
+  const m={ok:['成功','ok'],already:['已签','warn'],no_campaign:['无活动','warn'],error:['失败','bad']};
+  const v=m[st]||[st||'—','warn'];
+  return badge(v[0],v[1]);
+}
+// ckDetail 奖励 / 说明 / 连续天数拼成一行明细。
+function ckDetail(r){
+  const bits=[];
+  if(r.reward)bits.push(r.reward);
+  if(r.message)bits.push(r.message);
+  if(r.days)bits.push('连续 '+r.days+' 天');
+  return bits.join(' · ')||'—';
 }
 
+
 async function askCheckin(){
-  let wb=0,db=0;
-  try{const d=await api('/accounts');wb=(d.workbuddy||[]).length;db=((d.doubao||{}).accounts||[]).length;}catch(e){}
-  if(!confirm('确认立即签到？\n\n目标：WorkBuddy '+wb+' 个账号 + 豆包 '+db+' 个账号。\n已签到的账号会幂等返回。'))return;
-  try{const d=await post('/checkin');
-    toast('签到已执行：WorkBuddy '+(d.workbuddy?.ok?'成功':'失败')+' / 豆包 '+(d.doubao_ok?'成功':'不可用'));
-    loadTasks();}catch(e){toast(e.message,true);}
+  let wb=0,db=0,tr=0;
+  try{
+    const d=await api('/accounts');
+    wb=(d.workbuddy||[]).length;
+    db=((d.doubao||{}).accounts||[]).length;
+    tr=((d.trae||{}).accounts||[]).length;
+  }catch(e){}
+  const target='WorkBuddy '+wb+' + 豆包 '+db+(tr?(' + Trae '+tr):'');
+  if(!confirm('确认立即签到全部账号？\n\n目标：'+target+' 个账号。\n已签到的账号会幂等返回，单家失败不影响其它两家。'))return;
+  try{
+    const d=await post('/checkin');
+    const parts=['WorkBuddy '+(d.workbuddy&&d.workbuddy.ok?'成功':'失败'),
+                 '豆包 '+(d.doubao_ok?'成功':'不可用')];
+    if(d.trae)parts.push('Trae '+(d.trae.ok?'成功':'失败'));
+    const bad=!(d.workbuddy&&d.workbuddy.ok)||!d.doubao_ok||(d.trae&&!d.trae.ok);
+    toast('签到已执行：'+parts.join(' / '),bad);
+    loadTasks();
+  }catch(e){toast(e.message,true);}
 }
 
 document.getElementById('task-buttons').innerHTML=TASKS.map(([k,n])=>
@@ -884,12 +1114,6 @@ async function sendChat(){
 }
 function stopChat(){chatAbort?.abort();}
 
-async function loadSettings(){
-  try{const d=await api('/settings');
-    document.getElementById('settings-json').textContent=JSON.stringify(d,null,2);
-    document.getElementById('foot-port').textContent=d.listen||'—';
-  }catch(e){toast(e.message,true);}
-}
 
 /* ---------- 新增账号弹窗交互 ---------- */
 function openDlg(title,bodyHtml,footHtml){
@@ -970,28 +1194,7 @@ async function submitDBCookie(){
   }catch(e){toast(e.message,true);}
 }
 
-function openDBQR(){
-  openDlg('豆包 · 扫码登录',
-    '<div class="note">调用豆包 provider 的扫码端点（内置参数，出码可用）。<b>注意：</b>扫码确认阶段依赖上游 check_qrconnect 的三层签名，历史上曾返回 expired；若扫码后长时间未生效，请改用「粘贴 Cookie」。失败时会如实提示，不会伪装成功。</div>'+
-    '<div id="qr-result" class="oauth-url" style="display:block"></div>',
-    '<button class="ghost" onclick="closeDlg()">关闭</button>'+
-    '<button onclick="startDBQR()">获取二维码</button>');
-}
-async function startDBQR(){
-  const el=document.getElementById('qr-result');
-  el.textContent='请求中…';
-  try{const r=await post('/accounts/db/qr',{});
-    const img=r.image||r.qrcode||r.qrcode_base64||(r.data&&r.data.base64_image);
-    if(img){
-      const src=String(img).startsWith('data:')?img:('data:image/png;base64,'+img);
-      el.innerHTML='<img src="'+src+'" alt="二维码" style="max-width:220px;background:#fff;padding:8px;border-radius:8px">';
-      toast('二维码已生成，请用豆包 App 扫描');
-    }else{
-      el.textContent='未返回二维码：'+(r.message||r.error||JSON.stringify(r).slice(0,200));
-      toast('扫码端点未返回二维码',true);
-    }
-  }catch(e){el.textContent=e.message;toast(e.message,true);}
-}
+
 
 loadOverview();loadModels();loadSettings();
 </script>

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -176,6 +177,10 @@ func (s *Server) qrPoll(w http.ResponseWriter, r *http.Request) {
 	req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, u.String(), nil)
 	req.Header.Set("User-Agent", s.cfg.Upstream.UserAgent)
 	req.Header.Set("Referer", "https://www.doubao.com/")
+	// 刻意不回传出码时的 cookie。
+	// 实测（2026-11-22，未扫码状态逐组合验证）：不带 cookie 时所有参数组合都返回
+	// status=new；一旦回传 passport_csrf_token 就变成 error_code=2035「非法请求」。
+	// 该接口的 token 参数自带会话标识，额外带 csrf 会与请求签名冲突。
 	resp, err := s.http.Do(req)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"id": id, "status": sess.Status, "message": "轮询失败: " + err.Error()})
@@ -187,7 +192,7 @@ func (s *Server) qrPoll(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		Message string `json:"message"`
 		Data    struct {
-			Status      string `json:"status"`      // 实测为字符串：new / scanning / confirmed / expired
+			Status      string `json:"status"` // 实测为字符串：new / scanning / confirmed / expired
 			Description string `json:"description"`
 			RedirectURL string `json:"redirect_url"`
 			ErrorCode   int    `json:"error_code"`
@@ -196,6 +201,10 @@ func (s *Server) qrPoll(w http.ResponseWriter, r *http.Request) {
 	_ = json.Unmarshal(raw, &payload)
 
 	status := mapQRStatus(payload.Data.Status)
+	// 上游在参数不符时会回「非法请求 / 服务繁忙」这类 description，但 status 字段缺失，
+	// 只保留 message 无法定位缺哪个参数。这里把原始响应记进日志（截断）。
+	logf("qr_poll_raw id=%s status=%q desc=%q raw=%s", id, payload.Data.Status,
+		payload.Data.Description, truncate(string(raw), 300))
 	if status == "" {
 		status = sess.Status
 		if payload.Data.Description != "" {
@@ -263,4 +272,182 @@ func mapQRStatus(s string) string {
 		return "canceled"
 	}
 	return ""
+}
+
+// upsertAccount 落盘账号：同名则覆盖，不存在则追加。
+//
+// 与 persistAccount 的分工：后者遇到同名直接 return，只用于「扫码新增」；
+// 而修改/导入 Cookie 必须覆盖旧值，否则面板改完重启又回滚。
+func (s *Server) upsertAccount(a config.Account) {
+	acctFileMu.Lock()
+	defer acctFileMu.Unlock()
+	path := s.accountsPath()
+	var f accountsFile
+	if raw, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(raw, &f)
+	}
+	replaced := false
+	for i := range f.Accounts {
+		if f.Accounts[i].Name == a.Name {
+			f.Accounts[i] = a
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		f.Accounts = append(f.Accounts, a)
+	}
+	raw, err := json.MarshalIndent(f, "", "  ")
+	if err != nil {
+		logf("account_upsert_marshal_error account=%s err=%v", a.Name, err)
+		return
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		logf("account_upsert_write_error account=%s err=%v", a.Name, err)
+	}
+}
+
+// cookieUID 从 cookie 串里取账号级标识（uid_tt 优先，兼容 __tea__ug__uid）。
+func cookieUID(cookie string) string {
+	for _, part := range strings.Split(cookie, ";") {
+		kv := strings.SplitN(strings.TrimSpace(part), "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		switch kv[0] {
+		case "uid_tt":
+			return strings.TrimSpace(kv[1])
+		case "__tea__ug__uid":
+			if v := strings.TrimSpace(kv[1]); v != "" {
+				return v
+			}
+		}
+	}
+	return ""
+}
+
+// resolveImportTarget 决定导入时写哪条记录：同 uid 的已有账号优先复用。
+//
+// 为什么必须去重：同一个豆包账号可能已经以 main / 手写别名存在，若每次导入都
+// 新增 local-xxxxxxxx，号池会堆出一串同一账号的记录，只能手工删——这正是用户
+// 反馈的问题。按 uid_tt 认人，已存在就更新它的 cookie，不产生新记录。
+func (s *Server) resolveImportTarget(name, uid string) string {
+	// 同名直接复用（重复导入同一 profile 的常见路径）。
+	if _, ok := s.accs[name]; ok {
+		return name
+	}
+	if uid == "" {
+		return name
+	}
+	// 多账号同 uid 时取名字序最小的，保证结果稳定（map 遍历顺序随机）。
+	matches := make([]string, 0, 2)
+	for existing, rec := range s.accs {
+		if cookieUID(rec.Cookie) == uid {
+			matches = append(matches, existing)
+		}
+	}
+	if len(matches) == 0 {
+		return name
+	}
+	sort.Strings(matches)
+	return matches[0]
+}
+
+// adminImportLocalCookie 从本机豆包客户端导入登录态（替代手工抓 cookie）。
+//
+// 遍历客户端的所有 profile：同一客户端可同时登录多个豆包账号（Default 与
+// Profile 1 的 sessionid 不同），只读 Default 会漏号。账号名由 uid_tt 派生
+// （local-xxxxxxxx），重复导入同一账号是覆盖而非新增。
+func (s *Server) adminImportLocalCookie(w http.ResponseWriter, r *http.Request) {
+	res, err := ImportDoubaoLocalCookies()
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error(), "local_import_failed", "invalid_request_error")
+		return
+	}
+	type imported struct {
+		Name    string `json:"name"`
+		Profile string `json:"profile"`
+		Keys    int    `json:"keys"`
+		Added   bool   `json:"added"`
+	}
+	out := make([]imported, 0, len(res.Accounts))
+	for _, p := range res.Accounts {
+		// 同 uid 已存在则复用其记录名，避免同一账号堆出多条。
+		target := s.resolveImportTarget(p.Name, p.UID)
+		s.mu.Lock()
+		a, existed := s.accs[target]
+		a.Name = target
+		a.Cookie = p.Cookie
+		if a.LocalAppID == "" {
+			a.LocalAppID = "582478"
+		}
+		a.Note = "本地客户端导入 · " + p.Profile
+		s.accs[p.Name] = a
+		s.mu.Unlock()
+
+		if !existed {
+			s.pool.Add(pool.Key{Name: a.Name, Key: a.Name, Priority: a.Priority})
+		}
+		s.upsertAccount(a)
+		out = append(out, imported{Name: target, Profile: p.Profile, Keys: p.Keys, Added: !existed})
+	}
+	logf("local_cookie_import count=%d", len(out))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "imported": out, "skipped": res.Skipped, "user_data": res.UserData,
+	})
+}
+
+// adminRemoveAccount 真正删除账号：内存 + 池 + accounts.json 一并移除。
+//
+// 与 adminDelete（DELETE /admin/accounts）的区别：后者只把账号移出池、
+// 记录仍留在文件里（设计初衷是"停用"）。这里用于清理重复/废弃账号，
+// 必须连记录一起删，否则重启后又回到池子里。
+func (s *Server) adminRemoveAccount(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "参数错误", "bad_json", "invalid_request_error")
+		return
+	}
+	name := strings.TrimSpace(body.Name)
+	if name == "" {
+		writeErr(w, http.StatusBadRequest, "name 不能为空", "bad_request", "invalid_request_error")
+		return
+	}
+	s.mu.Lock()
+	_, ok := s.accs[name]
+	if ok {
+		delete(s.accs, name)
+	}
+	s.mu.Unlock()
+	if !ok {
+		writeErr(w, http.StatusNotFound, "账号不存在: "+name, "not_found", "invalid_request_error")
+		return
+	}
+	s.pool.Remove(name)
+
+	acctFileMu.Lock()
+	path := s.accountsPath()
+	var f accountsFile
+	if raw, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(raw, &f)
+	}
+	kept := f.Accounts[:0]
+	for _, e := range f.Accounts {
+		if e.Name != name {
+			kept = append(kept, e)
+		}
+	}
+	f.Accounts = kept
+	raw, err := json.MarshalIndent(f, "", "  ")
+	if err == nil {
+		if werr := os.WriteFile(path, raw, 0o600); werr != nil {
+			logf("account_remove_write_error account=%s err=%v", name, werr)
+		}
+	}
+	acctFileMu.Unlock()
+
+	logf("account_removed name=%s", name)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "removed": name, "total": s.pool.Len()})
 }

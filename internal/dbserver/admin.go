@@ -154,6 +154,8 @@ func (s *Server) adminSetCookie(w http.ResponseWriter, r *http.Request) {
 		s.pool.Add(pool.Key{Name: a.Name, Key: a.Name, Priority: a.Priority})
 	}
 	s.mu.Unlock()
+	// 原实现只改内存不落盘：面板改/加 Cookie 后一重启就回滚。
+	s.upsertAccount(a)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "name": body.Name})
 }
 

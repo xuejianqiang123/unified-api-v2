@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -121,8 +122,13 @@ func providerOrderJSONPath(stateFile string) string {
 	return filepath.Join(filepath.Dir(stateFile), "provider_order.json")
 }
 
-func main() {
+// runServer 是原来的 main 主体：解析配置、装配 provider、启动 HTTP 服务。
+// 由 main 在「普通前台运行」与「Windows 服务」两种模式下调用。
+func runServer() {
 	cfgPath := flag.String("config", "config.json", "path to config json")
+	// -detach 由 main 在进入 runServer 之前处理，这里必须声明：
+	// flag 包遇到未定义参数会直接 Exit(2)，网关会静默起不来。
+	_ = flag.Bool("detach", false, "detach from console (used by Task Scheduler)")
 	flag.Parse()
 
 	cfg, err := Load(*cfgPath)
@@ -390,6 +396,23 @@ func main() {
 		log.Printf("doubao provider 已加载（config=%s, healthy=%d/%d）", cfg.Providers.Doubao.Config, dh, dt)
 	}
 
+	// ===== Trae provider：外部反代（Trae2api-cn 独立进程）=====
+	// 与 doubao 的差别：doubao 是进程内 handler，Trae 是 HTTP 转发的独立服务。
+	// 网关只负责把它纳入统一别名与故障转移，账号/OAuth/签到仍由 Trae2api 管。
+	var traeChat func(http.ResponseWriter, *http.Request)
+	var traeAdmin *server.TraeClient
+	if cfg.Providers.Trae.Enabled {
+		traeAdmin = server.NewTraeClient(cfg.Providers.Trae.BaseURL, cfg.Providers.Trae.APIKey)
+		traeChat = traeAdmin.Chat
+		log.Printf("trae provider 已接线（base=%s）", traeAdmin.BaseURL())
+	}
+
+	// Loomy：进程内 provider。必须定义在别名校验之前——校验会检查 loomy 候选。
+	// 账号缺失不阻止启动：请求时回 503 并提示先在面板导入。
+	loomyProvider := server.NewLoomyProvider("loomy/conversations.json")
+	log.Printf("loomy provider 已接线（会话存储 loomy/conversations.json，已有 %d 条）",
+		loomyProvider.Conversations().Len())
+
 	// 别名启动期校验：拼错的 provider / 空 model 在启动时就暴露，不留到运行期。
 	// 多候选别名（providers 数组）逐个校验；无候选视为配置错误。
 	for name, a := range cfg.Aliases {
@@ -404,8 +427,17 @@ func main() {
 				if doubaoChat == nil {
 					log.Fatalf("别名 %q 指向 doubao，但 providers.doubao.enabled 未开启", name)
 				}
+			case "trae":
+				if traeChat == nil {
+					log.Fatalf("别名 %q 指向 trae，但 providers.trae.enabled 未开启", name)
+				}
+			case "loomy":
+				// loomy 是进程内 provider，凭证缺失不阻止启动（请求时回 503 并提示导入）。
+				if loomyProvider == nil {
+					log.Fatalf("别名 %q 指向 loomy，但 loomy provider 未初始化", name)
+				}
 			default:
-				log.Fatalf("别名 %q 的 provider %q 未知（仅支持 workbuddy / doubao）", name, p)
+				log.Fatalf("别名 %q 的 provider %q 未知（仅支持 workbuddy / doubao / trae / loomy）", name, p)
 			}
 		}
 		if a.Model == "" {
@@ -457,6 +489,11 @@ func main() {
 		DoubaoChat:   doubaoChat,
 		DoubaoHealth: doubaoHealth,
 		DoubaoAdmin:  doubaoAdmin,
+		// Trae：外部反代，nil 时别名里的 trae 候选会被跳过并报 503。
+		TraeChat:  traeChat,
+		TraeAdmin: traeAdmin,
+		// Loomy：进程内 provider，凭证来自 loomy/accounts.json。
+		LoomyChat:    loomyProvider.Chat,
 		PanelEnabled: cfg.Panel.Enabled,
 		PanelAuth:    cfg.Panel.Auth,
 		// 面板账号新增所需路径：凭证目录、OAuth 登录程序、豆包账号文件。
@@ -546,4 +583,65 @@ func main() {
 		log.Fatalf("http: %v", err)
 	}
 	log.Printf("bye")
+}
+
+// main 是两种运行模式的入口：
+//
+//	unified-api-v2                    前台运行（开发/手工调试）
+//	unified-api-v2 install-service    注册为 Windows 服务（失败自动重启）
+//	unified-api-v2 uninstall-service  卸载服务
+//	（无参数且由 SCM 启动）            以服务方式运行
+//
+// 服务模式下必须先把工作目录切到 exe 所在目录：SCM 默认工作目录是
+// C:/Windows/System32，直接启动会找不到 config.json。
+func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "install-service":
+			if err := installService(); err != nil {
+				log.Fatalf("安装服务失败: %v", err)
+			}
+			fmt.Println("服务已安装: " + serviceName + "（已配置失败自动重启）")
+			return
+		case "uninstall-service":
+			if err := uninstallService(); err != nil {
+				log.Fatalf("卸载服务失败: %v", err)
+			}
+			fmt.Println("服务已卸载: " + serviceName)
+			return
+		case "start-service":
+			if err := startService(); err != nil {
+				log.Fatalf("启动服务失败: %v", err)
+			}
+			fmt.Println("服务已启动")
+			return
+		case "stop-service":
+			if err := stopService(); err != nil {
+				log.Fatalf("停止服务失败: %v", err)
+			}
+			fmt.Println("服务已停止")
+			return
+		}
+	}
+	if isWindowsService() {
+		if exe, err := os.Executable(); err == nil {
+			_ = os.Chdir(filepath.Dir(exe))
+		}
+		redirectServiceLogs()
+		runAsService()
+		return
+	}
+	// -detach：由计划任务/看护拉起时使用，启动即脱离控制台，不留黑窗口。
+	// 日志改为追加到 gateway.err.log（stdout 已不可用）。
+	for _, a := range os.Args[1:] {
+		if a == "-detach" || a == "--detach" {
+			if exe, err := os.Executable(); err == nil {
+				_ = os.Chdir(filepath.Dir(exe))
+			}
+			redirectServiceLogs()
+			detachConsole()
+			break
+		}
+	}
+	runServer()
 }

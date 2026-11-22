@@ -105,6 +105,8 @@ func New(cfg *config.Config) *Server {
 	s.mux.HandleFunc("POST /admin/reload", s.withAuth(s.adminReload))
 	s.mux.HandleFunc("POST /admin/cookie", s.withAuth(s.adminSetCookie))
 	s.mux.HandleFunc("DELETE /admin/accounts", s.withAuth(s.adminDelete))
+	s.mux.HandleFunc("POST /admin/accounts/remove", s.withAuth(s.adminRemoveAccount))
+	s.mux.HandleFunc("POST /admin/accounts/import-local", s.withAuth(s.adminImportLocalCookie))
 	s.mux.HandleFunc("POST /admin/accounts/qr", s.withAuth(s.qrStart))
 	s.mux.HandleFunc("GET /admin/accounts/qr", s.withAuth(s.qrPoll))
 	s.mux.HandleFunc("POST /admin/accounts/{name}/toggle", s.withAuth(s.adminToggleAccount))

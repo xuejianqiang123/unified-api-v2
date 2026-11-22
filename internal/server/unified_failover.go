@@ -96,6 +96,26 @@ func (h *Handler) callProvider(ctx context.Context, r *http.Request, provider st
 		r2.Header.Set(HeaderSessionID, doubaoSessionID(r))
 		h.cfg.DoubaoChat(capture, r2)
 		return nil
+	case "trae":
+		if h.cfg.TraeChat == nil {
+			writeOpenAIError(capture, http.StatusServiceUnavailable, "provider_unavailable",
+				"trae provider 未接线：检查 providers.trae.enabled 与 Trae2api 是否在线")
+			return nil
+		}
+		// 模型名已在 dispatchUnifiedAlias 里按别名重写成上游名；这里只负责转发。
+		r2.Header.Set("X-Unified-Alias", aliasName)
+		h.cfg.TraeChat(capture, r2)
+		return nil
+	case "loomy":
+		if h.cfg.LoomyChat == nil {
+			writeOpenAIError(capture, http.StatusServiceUnavailable, "provider_unavailable",
+				"loomy provider 未接线：检查启动日志与 loomy/accounts.json")
+			return nil
+		}
+		r2.Header.Set("X-Unified-Alias", aliasName)
+		r2.Header.Set(HeaderSessionID, doubaoSessionID(r))
+		h.cfg.LoomyChat(capture, r2)
+		return nil
 	case "workbuddy", "":
 		// 绕过别名分发，直接进原聊天处理；用 bypass 标记防止递归。
 		r2 = r2.WithContext(context.WithValue(r2.Context(), ctxUnifiedBypass{}, true))

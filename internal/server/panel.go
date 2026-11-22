@@ -287,7 +287,7 @@ func (h *Handler) panelCheckinGet(w http.ResponseWriter, _ *http.Request) {
 
 // panelCheckinPost 立即签到：两个 provider 各跑一次。WorkBuddy 走进程内 CheckinFn，
 // 豆包走自己的 /admin/checkin；任一失败不影响另一方的执行与结果展示。
-func (h *Handler) panelCheckinPost(w http.ResponseWriter, _ *http.Request) {
+func (h *Handler) panelCheckinPost(w http.ResponseWriter, r *http.Request) {
 	var wb any
 	if h.cfg.CheckinFn != nil {
 		rep, busy, err := h.cfg.CheckinFn()
@@ -296,8 +296,16 @@ func (h *Handler) panelCheckinPost(w http.ResponseWriter, _ *http.Request) {
 		wb = map[string]any{"ok": false, "err": "签到未接线"}
 	}
 	db, dbStatus := h.doubaoAdmin(http.MethodPost, "/admin/checkin", nil)
+	// Trae：外部进程，接线时一并签到。单家失败只影响自己的 ok，不让整体报错。
+	var tr any
+	if h.cfg.TraeAdmin != nil {
+		out, st := h.cfg.TraeAdmin.Admin(r.Context(), http.MethodPost, "/api/checkin/claim-all", nil)
+		tr = map[string]any{"ok": st >= 200 && st < 300, "status": st, "data": out}
+	} else {
+		tr = map[string]any{"ok": false, "err": "Trae 未接线"}
+	}
 	panelJSON(w, http.StatusOK, map[string]any{
-		"workbuddy": wb, "doubao": db, "doubao_ok": dbStatus == http.StatusOK,
+		"workbuddy": wb, "doubao": db, "doubao_ok": dbStatus == http.StatusOK, "trae": tr,
 	})
 }
 
@@ -426,17 +434,19 @@ func (h *Handler) panelProviderOrder(w http.ResponseWriter, r *http.Request) {
 
 // providerOrderView 输出当前优先序与来源，供概览页直接渲染控件。
 func (h *Handler) providerOrderView() map[string]any {
-	order := h.ProviderOrder()
-	effective := order
+	raw := h.ProviderOrder()
+	effective := raw
 	source := "override"
 	if len(effective) == 0 {
 		source = "config"
 		effective = h.configProviderOrder()
 	}
+	// 展示层补齐：历史偏好文件里没有 trae 时也要显示该行，否则面板像少了 provider。
+	effective = h.fillProviders(effective)
 	return map[string]any{
 		"order":     effective,
 		"source":    source,
-		"providers": []string{"doubao", "workbuddy"},
+		"providers": h.enabledProviders(), // 已接线 provider（含 trae），供面板渲染行
 	}
 }
 
@@ -550,6 +560,35 @@ func (h *Handler) panelAPI(w http.ResponseWriter, r *http.Request) {
 		h.panelPool(w, r)
 	case p == "/quota" && method == http.MethodGet:
 		h.panelQuota(w, r)
+	// Trae provider 管理代理（外部 Trae2api 进程）。精确路径在前、前缀在后。
+	case p == "/trae/accounts" && method == http.MethodGet:
+		h.panelTraeAccounts(w, r)
+	case p == "/trae/overview" && method == http.MethodGet:
+		h.panelTraeOverview(w, r)
+	case p == "/trae/checkin-status" && method == http.MethodGet:
+		h.panelTraeCheckinStatus(w, r)
+	case p == "/trae/accounts/model-enabled" && method == http.MethodPost:
+		h.panelTraeModelEnabled(w, r)
+	case p == "/trae/accounts/remove" && method == http.MethodPost:
+		h.panelTraeRemove(w, r)
+	case p == "/trae/accounts/reorder" && method == http.MethodPost:
+		h.panelTraeReorder(w, r)
+	// Loomy：网关自己管理账号（无外部进程）。凭证来自专用 Edge profile 的登录。
+	case p == "/loomy/accounts" && method == http.MethodGet:
+		h.panelLoomyAccounts(w, r)
+	case p == "/loomy/import-local" && method == http.MethodPost:
+		h.panelLoomyImportLocal(w, r)
+	case p == "/loomy/remove" && method == http.MethodPost:
+		h.panelLoomyRemove(w, r)
+	// 账号新增：import-local 读本机 Trae 客户端凭证（免跳转），accounts/add 为手动粘贴兜底。
+	case p == "/trae/import-local" && method == http.MethodPost:
+		h.panelTraeImportLocal(w, r)
+	case p == "/trae/accounts/add" && method == http.MethodPost:
+		h.panelTraeAddAccount(w, r)
+	case p == "/trae/checkin" && method == http.MethodPost:
+		h.panelTraeCheckinAll(w, r)
+	case strings.HasPrefix(p, "/trae/checkin/") && method == http.MethodPost:
+		h.panelTraeCheckinOne(w, r, strings.TrimPrefix(p, "/trae/checkin/"))
 	case p == "/keys" && method == http.MethodGet:
 		h.panelKeys(w, r)
 	case p == "/models" && method == http.MethodGet:
@@ -591,8 +630,10 @@ func (h *Handler) panelAPI(w http.ResponseWriter, r *http.Request) {
 		h.panelWBOAuthPoll(w, r)
 	case p == "/accounts/db/cookie" && method == http.MethodPost:
 		h.panelDBCookie(w, r)
-	case strings.HasPrefix(p, "/accounts/db/qr") && (method == http.MethodPost || method == http.MethodGet):
-		h.panelDBQR(w, r)
+	case p == "/accounts/db/import-local" && method == http.MethodPost:
+		h.panelDBImportLocal(w, r)
+	case p == "/accounts/db/remove" && method == http.MethodPost:
+		h.panelDBRemove(w, r)
 	case p == "/test" && method == http.MethodPost:
 		// 测试台复用统一聊天入口：别名路由、鉴权、预算与统计全部一致。
 		// 固定独立会话标识：测试台的连续提问落进同一个豆包会话，又不与外部
