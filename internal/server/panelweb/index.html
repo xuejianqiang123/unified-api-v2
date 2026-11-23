@@ -716,7 +716,8 @@ async function loadAccounts(){
               : '');
         // CodeArts 的「添加账号」= 从本机 IDE 重读凭据（没有用户名密码可填）。
         const caImport=r.provider==='codearts'
-          ? ' <button class="ghost" onclick="importCodeArts(this)" title="从本机码道 IDE 重新读取凭据（接管模式下会拒绝更旧的凭据）">导入</button>'
+          ? ' <button class="ghost" onclick="checkinCodeArts(this)" title="CodeArts 每日签到（与网关定时任务同源）">签到</button>'+
+            ' <button class="ghost" onclick="importCodeArts(this)" title="从本机码道 IDE 重新读取凭据（接管模式下会拒绝更旧的凭据）">导入</button>'
           : '';
         const ops=isTrae
           ? '<button class="ghost" onclick="toggleTraeAcc(\''+esc(r.id||'')+'\','+(r.trae.enabled?1:0)+',this)">'+(r.trae.enabled?'停用':'启用')+'</button> '+
@@ -888,6 +889,21 @@ async function traeWebLogin(){
     window.open(r.url,'_blank');
     toast(r.hint||'登录页已打开；登录后回面板刷新');
   }catch(e){ toast(e.message,true); }
+}
+
+// checkinCodeArts 立即执行一次 CodeArts 签到（后端与 scheduler 同源）。
+async function checkinCodeArts(btn){
+  if(btn)btn.disabled=true;
+  try{
+    const r=await post('/codearts/checkin',{});
+    if(r&&r.ok){
+      toast('签到成功'+(r.credit?('：+' + r.credit + ' 积分'):'')+(r.message?('（'+r.message+'）'):''));
+      loadAccounts();
+    }else{
+      toast((r&&(r.message||r.err))||'签到失败',true);
+    }
+  }catch(e){ toast(e.message,true); }
+  finally{ if(btn)btn.disabled=false; }
 }
 
 // loomyWebLogin 打开独立 Edge 登录窗口，网关后台轮询 profile 的 cookie，
@@ -1188,7 +1204,7 @@ async function loadTasks(){
       // 否则「签到成功」只能从聚合计数里猜。
       ((r.results)||[]).forEach(x=>{
         const uid=String(x.uid||'');
-        if(!uid.startsWith('codearts:'))return;
+        if(!(uid==='codearts'||uid.startsWith('codearts:')))return;
         rows.push({at:okAt?st.getTime():0,provider:'codearts',
           target:x.nickname||uid.slice('codearts:'.length),
           result:ckBadge(x.status),

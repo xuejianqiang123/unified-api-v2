@@ -312,7 +312,47 @@ func runServer() {
 		if codeArtsProvider == nil {
 			return string(codeartspkg.ClaimFailed), 0, "codearts 未接线", nil
 		}
+		started := time.Now()
 		res, cerr := codeArtsProvider.Client().ClaimDailyCheckin(ctx)
+
+		// 记入签到历史：面板「签到记录」此前只有 workbuddy，codearts 明明签了却看不见。
+		status := "fail"
+		switch string(res.Kind) {
+		case "claimed":
+			status = "ok"
+		case "already-claimed":
+			status = "already"
+		}
+		// UID 与 scheduler 的写法保持一致（codearts:<账号名>），
+		// 否则同一个平台会出现两种 uid 形态，统计与前端匹配都要写两套。
+		caName := "codearts"
+		if cred, cerr := codeArtsProvider.Client().Credential(); cerr == nil && cred.Name != "" {
+			caName = cred.Name
+		}
+		one := server.CheckinResult{
+			UID: "codearts:" + caName, Nickname: caName,
+			Provider: "codearts", Status: status,
+		}
+		if res.Credit > 0 {
+			c := res.Credit
+			one.Credits = &c
+		}
+		if cerr != nil {
+			one.Detail = cerr.Error()
+		} else if message == "" && res.Message != "" {
+			one.Detail = res.Message
+		}
+		rep := server.CheckinReport{Enabled: true, Total: 1, Results: []server.CheckinResult{one}}
+		switch status {
+		case "ok":
+			rep.OK = 1
+		case "already":
+			rep.Already = 1
+		default:
+			rep.Fail = 1
+		}
+		checkinStore.Append(rep, started, time.Now())
+
 		if cerr != nil {
 			return string(codeartspkg.ClaimFailed), 0, cerr.Error(), cerr
 		}

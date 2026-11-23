@@ -204,6 +204,9 @@ type CheckinResult struct {
 	Credits *int64 `json:"credits,omitempty"`
 	// Detail 失败/跳过原因（成功与「已签到」不填）。
 	Detail string `json:"detail,omitempty"`
+	// Provider 该条结果来自哪家（workbuddy/codearts/...）。旧记录没有这个字段，
+	// 前端按空串回落到 workbuddy 标签，保持兼容。
+	Provider string `json:"provider,omitempty"`
 }
 
 // CheckinReport 一次全量签到的报告。

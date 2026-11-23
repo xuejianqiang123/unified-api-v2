@@ -608,6 +608,8 @@ func (h *Handler) panelAPI(w http.ResponseWriter, r *http.Request) {
 		h.panelCodeArtsImport(w, r)
 	case p == "/codearts/login" && method == http.MethodGet:
 		h.panelCodeArtsLogin(w, r)
+	case p == "/codearts/checkin" && method == http.MethodPost:
+		h.panelCodeArtsCheckin(w, r)
 	case p == "/codearts/login" && method == http.MethodPost:
 		h.panelCodeArtsLogin(w, r)
 	case p == "/loomy/accounts" && method == http.MethodGet:
