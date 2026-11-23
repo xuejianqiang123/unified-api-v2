@@ -11,77 +11,33 @@ import (
 	"time"
 )
 
-// 豆包工作模式的「活动任务」签到协议。
+// 豆包签到：网页端 landing/checkin。
 //
-// 背景（2026-11-23 实测）：旧的 `POST /alice/ug/campaign/landing/checkin`
-// （body {"scene":...}）已失效，上游返回「当前无可用签到渠道」。豆包改成了
-// 活动 → 任务 → 领奖励的三段式：
+// 2026-11-23 实测结论（踩过的三个坑都写在这里）：
 //
-//	POST /alice/user/launch                       拿 ug_campaign_info.campaign_group_code
-//	POST /alice/ug/campaign/v3/detail/            body {"campaign_group_code":g}，读 tasks[]
-//	POST /alice/ug/campaign/item/reward/claim/    body {"task_id":"","campaign_group_code":g,"campaign_item_code":"daily_signin"}
+//  1. 接口没变，还是 POST /alice/ug/campaign/landing/checkin，
+//     body {"scene":"pc_incentive_task_mvp_v3","biz_params":{}}。
+//  2. **参数必须是网页端那一套**：aid=497858、doubao_device_platform=web、
+//     pc_version=2.36.14、doubao_pc_version=5.75.58、runtime_version=5.75.58。
+//     用 PC 客户端的 aid=1044603 / desktop / 2.33.5 会得到「当前无可用签到渠道」。
+//  3. **msToken 是必需的**，从 Cookie 里取。缺失时上游回 710010702「系统错误」，
+//     这个错误码极具误导性（看起来像服务端故障，实际是缺 token）。
 //
-// 关键细节：
-//   - 必须带一组固定的客户端 query 参数（aid=1044603、pc_version…），否则 404；
-//   - device_id/web_id/fp 来自 **Cookie**（我们以前用 sha256(cookie)[:6] 自造，是错的）；
-//   - 领取是异步的，返回 "领取结果确认中"，要回查 daily_checkin.checked_in_today 才算成功。
-const (
-	doubaoCampaignDetail = "/alice/ug/campaign/v3/detail/"
-	doubaoCampaignList   = "/alice/ug/campaign/list/"
-	doubaoCampaignClaim  = "/alice/ug/campaign/item/reward/claim/"
-	doubaoLaunch         = "/alice/user/launch"
-	// dailySigninCode 每日签到任务在 tasks[] 里的 campaign_code。
-	dailySigninCode = "daily_signin"
-)
+// 所以「无可用签到渠道」从来不是活动下线，而是参数与 token 不对。
+const landingCheckinPath = "/alice/ug/campaign/landing/checkin"
 
-// campaignTask 是 tasks[] 里我们关心的字段。
-type campaignTask struct {
-	Code  string `json:"campaign_code"`
-	Group string `json:"campaign_group_code"`
-	Mode  int    `json:"reward_mode"`
-	State int    `json:"task_status"`
-	Daily *struct {
-		CheckedInToday bool   `json:"checked_in_today"`
+// landingResp 是 landing/checkin 的响应体。
+type landingResp struct {
+	Code int    `json:"code"`
+	Msg  string `json:"msg"`
+	Data *struct {
+		CheckedIn      bool   `json:"checked_in"`
+		CheckinDate    string `json:"checkin_date"`
 		ContinuousDays int    `json:"continuous_days"`
-		LastCheckin    string `json:"last_checkin_date"`
-		Reward         struct {
-			Amount int    `json:"reward_amount"`
-			Type   string `json:"reward_type"`
-		} `json:"reward"`
-	} `json:"daily_checkin"`
-}
-
-// Claimable 判断该任务当前能否直接领取：
-// task_status==2（已完成待领），或 reward_mode==2（直接领取）且状态在 1/4。
-func (t campaignTask) Claimable() bool {
-	if t.State == 2 {
-		return true
-	}
-	return t.Mode == 2 && (t.State == 1 || t.State == 4)
-}
-
-// campaignQuery 构造豆包工作端要求的 query（照 PC 客户端）。
-func campaignQuery(cookie string) url.Values {
-	q := url.Values{
-		"aid": {"1044603"}, "real_aid": {"1044603"},
-		"device_platform": {"web"}, "version_code": {"20800"},
-		"samantha_web": {"1"}, "web_platform": {"desktop"},
-		"doubao_device_platform": {"desktop"}, "client_platform": {"pc_client"},
-		"pkg_type": {"release_version"}, "runtime": {"web"},
-		"runtime_version": {"3.42.2"}, "pc_version": {"2.33.5"},
-		"doubao_pc_version": {"2.33.5"}, "use-olympus-account": {"1"},
-		"language": {"zh"}, "region": {"CN"}, "sys_region": {"CN"},
-	}
-	// device_id / web_id / fp 必须从 Cookie 里取——自造的值会被上游判为非法设备。
-	for k, v := range cookieMap(cookie) {
-		switch k {
-		case "device_id", "web_id":
-			q.Set(k, v)
-		case "s_v_web_id":
-			q.Set("fp", v)
-		}
-	}
-	return q
+		Idempotent     bool   `json:"idempotent"`
+		RewardAmount   int    `json:"reward_amount"`
+		RewardCode     string `json:"reward_code"`
+	} `json:"data"`
 }
 
 func cookieMap(cookie string) map[string]string {
@@ -94,157 +50,110 @@ func cookieMap(cookie string) map[string]string {
 	return out
 }
 
-// postCampaign 向豆包工作端点发 JSON POST，返回解析后的对象。
-func (s *Server) postCampaign(cookie, path string, body any) (map[string]any, error) {
-	raw, err := json.Marshal(body)
-	if err != nil {
-		return nil, err
+// checkinQuery 构造网页端签到参数（与浏览器实际请求一致）。
+func checkinQuery(cm map[string]string) url.Values {
+	q := url.Values{
+		"version_code":           {"20800"},
+		"language":               {"zh"},
+		"device_platform":        {"web"},
+		"doubao_device_platform": {"web"},
+		"aid":                    {"497858"},
+		"real_aid":               {"497858"},
+		"pkg_type":               {"release_version"},
+		"pc_version":             {"2.36.14"},
+		"doubao_pc_version":      {"5.75.58"},
+		"runtime_version":        {"5.75.58"},
+		"runtime":                {"web"},
+		"samantha_web":           {"1"},
+		"web_platform":           {"desktop"},
+		"use-olympus-account":    {"1"},
 	}
-	u := "https://www.doubao.com" + path + "?" + campaignQuery(cookie).Encode()
-	req, err := http.NewRequest(http.MethodPost, u, bytes.NewReader(raw))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Referer", "https://www.doubao.com/")
-	req.Header.Set("User-Agent", s.cfg.Upstream.UserAgent)
-	req.Header.Set("Cookie", cookie)
-
-	resp, err := s.http.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncate(string(data), 200))
-	}
-	var out map[string]any
-	if err := json.Unmarshal(data, &out); err != nil {
-		return nil, fmt.Errorf("响应非 JSON: %s", truncate(string(data), 160))
-	}
-	return out, nil
-}
-
-// campaignGroup 取该账号当前的活动组（没有返回空串）。
-func (s *Server) campaignGroup(cookie string) (string, error) {
-	launch, err := s.postCampaign(cookie, doubaoLaunch, map[string]any{})
-	if err != nil {
-		return "", err
-	}
-	data, _ := launch["data"].(map[string]any)
-	info, _ := data["ug_campaign_info"].(map[string]any)
-	g, _ := info["campaign_group_code"].(string)
-	return g, nil
-}
-
-// dailySigninTask 读活动详情，返回每日签到任务（没有返回 nil）。
-func (s *Server) dailySigninTask(cookie, group string) (*campaignTask, error) {
-	path := doubaoCampaignList
-	if group == "pc_incentive_task_mvp_v3" {
-		path = doubaoCampaignDetail
-	}
-	out, err := s.postCampaign(cookie, path, map[string]any{"campaign_group_code": group})
-	if err != nil {
-		return nil, err
-	}
-	data, _ := out["data"].(map[string]any)
-	tasks, _ := data["tasks"].([]any)
-	for _, raw := range tasks {
-		b, err := json.Marshal(raw)
-		if err != nil {
-			continue
-		}
-		var t campaignTask
-		if err := json.Unmarshal(b, &t); err != nil {
-			continue
-		}
-		if t.Code == dailySigninCode {
-			if t.Group == "" {
-				t.Group = group
-			}
-			return &t, nil
+	// 这三个都从 Cookie 取；msToken 缺了直接失败，不猜、不自造。
+	for _, k := range []string{"msToken", "web_id", "tea_uuid"} {
+		if v := cm[k]; v != "" {
+			q.Set(k, v)
 		}
 	}
-	return nil, nil
+	if fp := cm["s_v_web_id"]; fp != "" {
+		q.Set("fp", fp)
+	}
+	return q
 }
 
-// doCheckin 走「活动任务」模型签到。
+// doCheckin 走网页端 landing/checkin 签到。
 func (s *Server) doCheckin(name, cookie, dev string) checkinResult {
 	res := checkinResult{Name: name, TS: time.Now().Unix()}
 	if cookie == "" {
 		res.Status, res.Message = "error", "无 Cookie"
 		return res
 	}
-	_ = dev // device_id 现在从 Cookie 取，保留形参兼容旧调用
+	_ = dev
 
-	group, err := s.campaignGroup(cookie)
-	if err != nil {
-		res.Status, res.Message = "error", truncate(err.Error(), 200)
-		return res
-	}
-	if group == "" {
-		res.Status, res.Message = "no_campaign", "此账号当前没有每日签到活动"
+	cm := cookieMap(cookie)
+	if cm["msToken"] == "" {
+		// 明确说清原因：这个错误以前会被误判成「上游挂了」。
+		res.Status, res.Message = "error",
+			"Cookie 缺少 msToken（需在浏览器登录豆包后重新导出 Cookie）"
 		return res
 	}
 
-	task, err := s.dailySigninTask(cookie, group)
+	scene := s.cfg.Checkin.Scene
+	if scene == "" {
+		scene = "pc_incentive_task_mvp_v3"
+	}
+	body, _ := json.Marshal(map[string]any{"scene": scene, "biz_params": map[string]any{}})
+	u := "https://www.doubao.com" + landingCheckinPath + "?" + checkinQuery(cm).Encode()
+
+	req, err := http.NewRequest(http.MethodPost, u, bytes.NewReader(body))
 	if err != nil {
-		res.Status, res.Message = "error", truncate(err.Error(), 200)
+		res.Status, res.Message = "error", err.Error()
 		return res
 	}
-	if task == nil || task.Daily == nil {
-		res.Status, res.Message = "no_campaign", "活动里没有每日签到任务"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Referer", "https://www.doubao.com/pc/agent-explore?enter_method=fixed_entry")
+	req.Header.Set("User-Agent", s.cfg.Upstream.UserAgent)
+	req.Header.Set("Cookie", cookie)
+
+	resp, err := s.http.Do(req)
+	if err != nil {
+		res.Status, res.Message = "error", err.Error()
 		return res
 	}
-	res.Days = task.Daily.ContinuousDays
-	if task.Daily.CheckedInToday {
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+
+	var payload landingResp
+	_ = json.Unmarshal(raw, &payload)
+
+	if payload.Data == nil || payload.Code != 0 {
+		code := payload.Code
+		msg := payload.Msg
+		if msg == "" {
+			msg = truncate(string(raw), 160)
+		}
+		// 710010702 在缺 msToken / token 过期时都会出现，给出可操作提示。
+		if code == 710010702 {
+			msg = "上游返回 710010702（设备或 msToken 校验失败）：请重新登录豆包并更新 Cookie"
+		}
+		res.Status, res.Message = "error", fmt.Sprintf("%s (code %d)", msg, code)
+		return res
+	}
+
+	d := payload.Data
+	res.Days = d.ContinuousDays
+	if !d.CheckedIn {
+		res.Status, res.Message = "error", "上游未返回签到成功"
+		return res
+	}
+	if d.RewardAmount > 0 {
+		res.Reward = fmt.Sprintf("%d 额度", d.RewardAmount)
+	}
+	if d.Idempotent {
+		// 幂等：本次之前就已签到（含重试/重复触发），不算新签。
 		res.Status, res.Message = "already", "今日已签到"
 		return res
 	}
-	if !task.Claimable() {
-		res.Status, res.Message = "error", "今日任务尚未满足领取条件"
-		return res
-	}
-
-	// 领取（异步）：先提交，再回查。
-	claim, cerr := s.postCampaign(cookie, doubaoCampaignClaim, map[string]any{
-		"task_id":             "",
-		"campaign_group_code": task.Group,
-		"campaign_item_code":  task.Code,
-	})
-	if cerr != nil {
-		res.Status, res.Message = "error", truncate(cerr.Error(), 200)
-		return res
-	}
-	biz, _ := claim["data"].(map[string]any)
-	if e, ok := biz["biz_error"].(map[string]any); ok {
-		// "领取结果确认中" 属正常（异步），继续回查；其他错误如实上报。
-		if msg, _ := e["message"].(string); msg != "" && !strings.Contains(msg, "确认中") {
-			res.Status, res.Message = "error", msg
-			return res
-		}
-		if msg, _ := e["message"].(string); msg != "" {
-			res.Message = msg
-		}
-	}
-
-	// 回查：只有 checked_in_today 变 true 才算成功。
-	if after, err := s.dailySigninTask(cookie, group); err == nil && after != nil && after.Daily != nil {
-		if after.Daily.CheckedInToday {
-			res.Status = "ok"
-			res.Days = after.Daily.ContinuousDays
-			if after.Daily.Reward.Amount > 0 {
-				res.Reward = fmt.Sprintf("%d 额度", after.Daily.Reward.Amount)
-			}
-			if res.Message == "" {
-				res.Message = "签到成功"
-			}
-			return res
-		}
-	}
-	res.Status = "pending"
-	res.Message = "领取结果确认中，未确认成功"
+	res.Status, res.Message = "ok", "签到成功"
 	return res
 }
