@@ -104,6 +104,7 @@ func (s *Server) adminReload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	added := []string{}
+	updated := []string{}
 	s.mu.Lock()
 	for i := range f.Accounts {
 		a := f.Accounts[i]
@@ -114,8 +115,16 @@ func (s *Server) adminReload(w http.ResponseWriter, r *http.Request) {
 		if a.LocalAppID == "" {
 			a.LocalAppID = "582478"
 		}
-		if _, exists := s.accs[a.Name]; exists {
-			continue // 已存在：不覆盖（Cookie 更新走重启或同名替换策略）
+		if existing, exists := s.accs[a.Name]; exists {
+			// 已存在：**更新 Cookie**，但不删账号、不动在途请求。
+			// 以前这里直接 continue，导致「从客户端导入新 Cookie」后内存仍是旧的
+			// （表现：accounts.json 里明明有 msToken，签到却说缺 msToken）。
+			existing.Cookie = a.Cookie
+			existing.DeviceID = a.DeviceID
+			existing.WebID = a.WebID
+			s.accs[a.Name] = existing
+			updated = append(updated, a.Name)
+			continue
 		}
 		s.accs[a.Name] = a
 		s.pool.Add(pool.Key{Name: a.Name, Key: a.Name, Priority: a.Priority})
@@ -123,9 +132,9 @@ func (s *Server) adminReload(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Unlock()
 
-	logf("admin_reload file=%s added=%d total=%d", path, len(added), s.pool.Len())
+	logf("admin_reload file=%s added=%d updated=%d total=%d", path, len(added), len(updated), s.pool.Len())
 	writeJSON(w, http.StatusOK, map[string]any{
-		"added": added, "total": s.pool.Len(), "healthy": s.pool.Healthy(),
+		"added": added, "updated": updated, "total": s.pool.Len(), "healthy": s.pool.Healthy(),
 	})
 }
 

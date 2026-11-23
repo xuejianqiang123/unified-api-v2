@@ -29,14 +29,14 @@ type Msg struct {
 
 // ChatRequest 客户端请求（只取本网关用得到的字段）。
 type ChatRequest struct {
-	Model       string          `json:"model"`
-	Messages    []Msg           `json:"messages"`
-	Stream      bool            `json:"stream"`
-	MaxTokens   int             `json:"max_tokens"`
-	Temperature *float64        `json:"temperature"`
-	TopP        *float64        `json:"top_p"`
-	User        string          `json:"user"`
-	Metadata    map[string]any  `json:"metadata"`
+	Model       string         `json:"model"`
+	Messages    []Msg          `json:"messages"`
+	Stream      bool           `json:"stream"`
+	MaxTokens   int            `json:"max_tokens"`
+	Temperature *float64       `json:"temperature"`
+	TopP        *float64       `json:"top_p"`
+	User        string         `json:"user"`
+	Metadata    map[string]any `json:"metadata"`
 	StreamOpts  *struct {
 		IncludeUsage bool `json:"include_usage"`
 	} `json:"stream_options"`
@@ -169,19 +169,19 @@ func BuildBody(req *ChatRequest, modelKey string, o BuildOptions) ([]byte, error
 	}
 
 	opt := map[string]any{
-		"create_time_ms":             nowMs,
-		"answer_with_suggest":        false,
-		"agent_mode":                 boolToInt(o.WorkMode),
-		"need_deep_think":            10001,
-		"unique_key":                 uuid(),
-		"start_seq":                  0,
-		"need_create_conversation":   o.ConversationID == "",
-		"conversation_init_option":   map[string]any{"need_ack_conversation": true},
-		"sse_recv_event_options":     map[string]any{"support_chunk_delta": true},
-		"support_lazy_fetch_stream":  true,
-		"is_old_user":                true,
-		"message_storage_type":       0,
-		"conversation_mode":          modeInt(o.WorkMode),
+		"create_time_ms":            nowMs,
+		"answer_with_suggest":       false,
+		"agent_mode":                boolToInt(o.WorkMode),
+		"need_deep_think":           10001,
+		"unique_key":                uuid(),
+		"start_seq":                 0,
+		"need_create_conversation":  o.ConversationID == "",
+		"conversation_init_option":  map[string]any{"need_ack_conversation": true},
+		"sse_recv_event_options":    map[string]any{"support_chunk_delta": true},
+		"support_lazy_fetch_stream": true,
+		"is_old_user":               true,
+		"message_storage_type":      0,
+		"conversation_mode":         modeInt(o.WorkMode),
 	}
 
 	initExt := map[string]any{
@@ -227,8 +227,8 @@ func BuildBody(req *ChatRequest, modelKey string, o BuildOptions) ([]byte, error
 			shared = append(shared, o.Workspace)
 		}
 		clientOpt := map[string]any{
-			"enable_sandbox":    o.EnableSandbox,
-			"os":                "Windows",
+			"enable_sandbox":     o.EnableSandbox,
+			"os":                 "Windows",
 			"shared_folder_path": shared,
 			"agent_workspace": map[string]any{
 				"agent_workspace":   o.Workspace,
@@ -256,12 +256,12 @@ func BuildBody(req *ChatRequest, modelKey string, o BuildOptions) ([]byte, error
 		}
 		opt["general_task_param"] = gtp
 		opt["ext"] = map[string]any{
-			"general_task_param":               mustJSONString(gtp),
-			"use_deep_think":                   "10001",
-			"agent_mode":                       "1",
-			"is_finish":                        "1",
-			"conversation_init_option":         `{"need_ack_conversation":true}`,
-			"commerce_credit_config_enable":    "0",
+			"general_task_param":            mustJSONString(gtp),
+			"use_deep_think":                "10001",
+			"agent_mode":                    "1",
+			"is_finish":                     "1",
+			"conversation_init_option":      `{"need_ack_conversation":true}`,
+			"commerce_credit_config_enable": "0",
 		}
 	}
 
@@ -277,8 +277,8 @@ func BuildBody(req *ChatRequest, modelKey string, o BuildOptions) ([]byte, error
 
 // Sink 流事件回调。
 type Sink interface {
-	OnText(string)                  // 正文增量
-	OnReasoning(string)             // 思考过程（标题级）
+	OnText(string)      // 正文增量
+	OnReasoning(string) // 思考过程（标题级）
 	OnConversation(conv, section string)
 	OnFinish(endType int, brief string)
 }

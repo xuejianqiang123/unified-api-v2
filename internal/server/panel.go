@@ -614,6 +614,10 @@ func (h *Handler) panelAPI(w http.ResponseWriter, r *http.Request) {
 		h.panelCodeArtsLogin(w, r)
 	case p == "/loomy/accounts" && method == http.MethodGet:
 		h.panelLoomyAccounts(w, r)
+	case p == "/doubao/import-client" && method == http.MethodPost:
+		h.panelDoubaoImportClient(w, r)
+	case p == "/doubao/import-profile" && method == http.MethodPost:
+		h.panelDoubaoImportProfile(w, r)
 	case p == "/doubao/login" && method == http.MethodPost:
 		h.panelDoubaoLogin(w, r)
 	case p == "/loomy/login" && method == http.MethodPost:

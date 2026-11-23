@@ -236,7 +236,9 @@ tr.drag-row.drag-over td{border-top:2px solid var(--accent)}
           <span class="dd" id="dd-db">
             <button class="ghost" onclick="toggleDD('dd-db')">豆包 ▾</button>
             <div class="dd-menu">
-              <a onclick="closeDD();doubaoWebLogin()">Web 登录（推荐）</a>
+              <a onclick="closeDD();doubaoImportClient()">从豆包客户端导入（推荐）</a>
+              <a onclick="closeDD();doubaoWebLogin()">Web 登录（浏览器）</a>
+              <a onclick="closeDD();doubaoImportProfile()">从本机导入（已登录过）</a>
               <a onclick="closeDD();openDBCookie()">粘贴 Cookie</a>
               <a onclick="closeDD();importDoubaoLocal(this)">导入本机豆包</a>
             </div>
@@ -879,6 +881,34 @@ async function codeArtsWebLogin(){
     if(!r||!r.url){ toast('获取登录链接失败',true); return; }
     window.open(r.url,'_blank');
     toast('已打开华为登录页；登录完成后会自动回到网关（5 分钟内有效）');
+  }catch(e){ toast(e.message,true); }
+}
+
+// doubaoImportClient 从正在运行的豆包客户端读 Cookie（含 msToken）。
+// 这是最傻瓜的路径：用户只需在客户端登录，不用复制、不用开浏览器。
+async function doubaoImportClient(){
+  try{
+    const r=await post('/doubao/import-client',{});
+    if(r&&r.ok){
+      toast('已从客户端导入（含 msToken，'+r.fields+' 个字段）');
+      loadAccounts();
+    }else{
+      toast((r&&(r.message||r.err))||'导入失败',true);
+    }
+  }catch(e){ toast(e.message,true); }
+}
+
+// doubaoImportProfile 只读已登录的独立 profile（不打开浏览器）。
+// 用于「Web 登录的窗口没及时关闭 / 轮询超时」时补一次读取。
+async function doubaoImportProfile(){
+  try{
+    const r=await post('/doubao/import-profile',{});
+    if(r&&r.ok){
+      toast('已导入（cookie '+r.cookie_len+' 字节，含 msToken）');
+      loadAccounts();
+    }else{
+      toast((r&&(r.message||r.err))||'导入失败',true);
+    }
   }catch(e){ toast(e.message,true); }
 }
 
