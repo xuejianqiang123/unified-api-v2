@@ -132,9 +132,14 @@ func (s *Server) doCheckin(name, cookie, dev string) checkinResult {
 		if msg == "" {
 			msg = truncate(string(raw), 160)
 		}
-		// 710010702 在缺 msToken / token 过期时都会出现，给出可操作提示。
+		// 710010702 在「缺 msToken」「设备校验失败」「前置任务未完成」时都会出现，
+		// 这个错误码本身几乎没有信息量。这里补一次任务状态诊断，把真正原因说出来。
 		if code == 710010702 {
-			msg = "上游返回 710010702（设备或 msToken 校验失败）：请重新登录豆包并更新 Cookie"
+			if hint := s.checkinBlockedHint(cookie); hint != "" {
+				msg = "签到任务未解锁：" + hint
+			} else {
+				msg = "上游返回 710010702（设备或 msToken 校验失败）：请重新登录豆包并更新 Cookie"
+			}
 		}
 		res.Status, res.Message = "error", fmt.Sprintf("%s (code %d)", msg, code)
 		return res
@@ -156,4 +161,72 @@ func (s *Server) doCheckin(name, cookie, dev string) checkinResult {
 	}
 	res.Status, res.Message = "ok", "签到成功"
 	return res
+}
+
+// checkinBlockedHint 判定签到为什么签不了（只在失败时调用，多一次请求可接受）。
+//
+// 实测（2026-11-23）：daily_signin 依赖 select_work_fields 完成；
+// 该任务 status=1 时，landing/checkin 一律返回 710010702，
+// 而「选择工作领域」只能在客户端界面提交（claim 接口不接受）。
+func (s *Server) checkinBlockedHint(cookie string) string {
+	cm := cookieMap(cookie)
+	if cm["msToken"] == "" {
+		return "Cookie 缺少 msToken，需重新登录豆包后更新 Cookie"
+	}
+	out, err := s.campaignDetail(cookie, "pc_incentive_task_mvp_v3")
+	if err != nil {
+		return ""
+	}
+	var work, sign int = -1, -1
+	var hasSign bool
+	for _, raw := range out {
+		code, _ := raw["campaign_code"].(string)
+		st, _ := raw["task_status"].(float64)
+		switch code {
+		case "select_work_fields":
+			work = int(st)
+		case "daily_signin":
+			sign = int(st)
+			hasSign = true
+		}
+	}
+	if work != -1 && work != 3 {
+		return "前置任务「选择工作领域」未完成 —— 请在豆包客户端「工作」模式里选一次领域（一次即可，之后永久解锁）"
+	}
+	if hasSign && sign == 1 {
+		return "签到任务处于未激活状态（task_status=1），通常需先在客户端完成一次工作模式交互"
+	}
+	return ""
+}
+
+// campaignDetail 拉一次活动详情，返回 tasks 原始数组。
+func (s *Server) campaignDetail(cookie, group string) ([]map[string]any, error) {
+	q := checkinQuery(cookieMap(cookie))
+	q.Del("scene")
+	body, _ := json.Marshal(map[string]any{"campaign_group_code": group})
+	u := "https://www.doubao.com/alice/ug/campaign/v3/detail/?" + q.Encode()
+	req, err := http.NewRequest(http.MethodPost, u, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Referer", "https://www.doubao.com/pc/agent-explore?enter_method=fixed_entry")
+	req.Header.Set("User-Agent", s.cfg.Upstream.UserAgent)
+	req.Header.Set("Cookie", cookie)
+	resp, err := s.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	var doc struct {
+		Data struct {
+			Tasks []map[string]any `json:"tasks"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, err
+	}
+	return doc.Data.Tasks, nil
 }
