@@ -236,6 +236,7 @@ tr.drag-row.drag-over td{border-top:2px solid var(--accent)}
           <span class="dd" id="dd-db">
             <button class="ghost" onclick="toggleDD('dd-db')">豆包 ▾</button>
             <div class="dd-menu">
+              <a onclick="closeDD();doubaoWebLogin()">Web 登录（推荐）</a>
               <a onclick="closeDD();openDBCookie()">粘贴 Cookie</a>
               <a onclick="closeDD();importDoubaoLocal(this)">导入本机豆包</a>
             </div>
@@ -878,6 +879,25 @@ async function codeArtsWebLogin(){
     if(!r||!r.url){ toast('获取登录链接失败',true); return; }
     window.open(r.url,'_blank');
     toast('已打开华为登录页；登录完成后会自动回到网关（5 分钟内有效）');
+  }catch(e){ toast(e.message,true); }
+}
+
+// doubaoWebLogin 打开独立 Edge 登录豆包，网关读取含 msToken 的 Cookie。
+// msToken 是页面 JS 生成的反爬 token，不走浏览器根本拿不到。
+async function doubaoWebLogin(){
+  try{
+    const r=await post('/doubao/login',{});
+    if(!r||!r.ok){ toast((r&&(r.message||r.err))||'打开登录窗口失败',true); return; }
+    toast(r.hint||'登录窗口已打开');
+    let n=0;
+    const timer=setInterval(async()=>{
+      n++;
+      try{
+        const s=await api('/accounts');
+        if(s&&((s.doubao&&s.doubao.accounts)||[]).length>0){ clearInterval(timer); loadAccounts(); toast('豆包账号已更新'); }
+      }catch(e){}
+      if(n>120) clearInterval(timer);
+    },3000);
   }catch(e){ toast(e.message,true); }
 }
 
