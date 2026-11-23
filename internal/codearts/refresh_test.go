@@ -2,10 +2,11 @@ package codearts
 
 import (
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"unified-api-v2/internal/vault"
 )
 
 // TestSaveCredentialMergesAndDedupes 同名只留 STS 最晚的一条，
@@ -36,7 +37,8 @@ func TestSaveCredentialMergesAndDedupes(t *testing.T) {
 		t.Fatalf("更新账号: %v", err)
 	}
 
-	raw, _ := os.ReadFile(path)
+	// 经 vault 读：SaveCredential 落盘即加密，直接读文件会拿到密文。
+	raw, _ := vault.ReadFile(path)
 	var doc struct {
 		Accounts []Credential `json:"accounts"`
 	}

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+	"unified-api-v2/internal/vault"
 )
 
 // RefreshThreshold 是「该去 IDE 重读凭据」的剩余时间阈值。
@@ -80,7 +81,7 @@ func SaveCredential(path string, cred Credential) error {
 	}
 
 	var accounts []Credential
-	if raw, err := os.ReadFile(path); err == nil {
+	if raw, err := vault.ReadFile(path); err == nil {
 		var doc struct {
 			Accounts []Credential `json:"accounts"`
 		}
@@ -134,7 +135,8 @@ func SaveCredential(path string, cred Credential) error {
 		return err
 	}
 	// 0600：凭据等价于账号密码，同机其他用户不该能读。
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
+	// 写盘即加密：此后该文件是密文，密钥在 data/.vaultkey。
+	if err := vault.WriteFile(path, raw); err != nil {
 		return err
 	}
 	// 覆盖写不会改权限（旧文件可能是 0644），显式收紧一次。

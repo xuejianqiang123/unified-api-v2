@@ -8,9 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"sync"
 	"time"
+	"unified-api-v2/internal/vault"
 )
 
 // 网关侧固定使用的上游参数。
@@ -64,7 +64,8 @@ func (c *Client) Credential() (Credential, error) {
 	if c == nil || c.credPath == "" {
 		return Credential{}, ErrNoCredential
 	}
-	raw, err := os.ReadFile(c.credPath)
+	// 走 vault：密文自动解密，明文原样返回（升级不需要迁移老文件）。
+	raw, err := vault.ReadFile(c.credPath)
 	if err != nil {
 		c.mu.RLock()
 		last := c.last
