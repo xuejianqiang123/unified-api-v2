@@ -3,8 +3,8 @@ package dbserver
 import (
 	"bufio"
 	"context"
-	"crypto/subtle"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -25,8 +25,8 @@ type APIKey struct {
 }
 
 var (
-	keyMu  sync.RWMutex
-	keysDB []APIKey
+	keyMu   sync.RWMutex
+	keysDB  []APIKey
 	usageMu sync.Mutex
 )
 
@@ -275,7 +275,6 @@ func maskKey(k string) string {
 	}
 	return k[:6] + "…" + k[len(k)-4:]
 }
-
 
 func itoaSimple(i int) string {
 	if i == 0 {
