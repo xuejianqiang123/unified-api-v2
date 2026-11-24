@@ -89,6 +89,7 @@ from .model_limits import (
 )
 from .sse import (
     EmptyUpstreamResponse,
+    InvalidNativeToolArguments,
     ModelProviderMismatch,
     RepeatedCompletedToolResponse,
     collect_nonstream_cli,
@@ -4547,6 +4548,64 @@ def _stream_start_event(model: str) -> str:
     )
 
 
+def _tool_feedback_message(exc: BaseException) -> dict:
+    """User-turn note asking the model to resend a rejected tool call."""
+    tool_name = str(getattr(exc, "tool_name", "") or "").strip()
+    broken = str(getattr(exc, "tool_arguments", "") or "")
+    head = "Your previous reply was not delivered: it contained a tool call"
+    if tool_name:
+        head += f" to `{tool_name}`"
+    head += (
+        " whose JSON arguments were malformed and could not be executed."
+    )
+    if broken:
+        snippet = broken if len(broken) <= 400 else broken[:400] + "..."
+        head += " The malformed arguments were:\n```json\n" + snippet + "\n```"
+    head += " Please resend the tool call with complete, valid JSON arguments."
+    return {"role": "user", "content": head}
+
+
+async def _retry_with_tool_feedback(
+    messages: list,
+    model: str,
+    options: Optional[dict],
+    exc: BaseException,
+    request_id: str,
+) -> Optional[Any]:
+    """Re-dispatch once with feedback after unusable tool arguments.
+
+    The broken call never reached the client (nothing was forwarded yet), so
+    a single same-route retry that tells the model what went wrong beats
+    failing the whole turn.  Returns the retry response, or ``None`` when the
+    retry is impossible — the caller then surfaces the original error.
+    """
+    feedback = list(messages or []) + [_tool_feedback_message(exc)]
+    logger.warning(
+        "tool-arguments feedback retry id=%s tool=%s",
+        request_id,
+        str(getattr(exc, "tool_name", "") or "") or "unknown",
+    )
+    try:
+        retried = await _dispatch_chat(feedback, model, True, dict(options or {}))
+    except Exception as retry_exc:
+        logger.warning(
+            "tool-arguments feedback retry failed id=%s error=%s",
+            request_id,
+            retry_exc,
+        )
+        return None
+    if _upstream_response_error(retried) or (
+        getattr(retried, "status_code", 200) >= 400
+    ):
+        logger.warning(
+            "tool-arguments feedback retry rejected id=%s status=%s",
+            request_id,
+            getattr(retried, "status_code", "?"),
+        )
+        return None
+    return retried
+
+
 async def _deferred_dispatch_stream(
     messages: list[dict], model: str, options: Optional[dict] = None
 ):
@@ -4834,6 +4893,38 @@ async def _deferred_dispatch_stream(
                 # public streaming request becomes a 502 while the same
                 # non-stream probe can still rotate/fallback successfully.
                 native_capacity_error = _is_native_rate_limit_error(exc)
+                # A tool call whose JSON arguments were rejected never
+                # reached the client (no payload forwarded yet): re-dispatch
+                # once with feedback so the model can resend it, instead of
+                # failing the whole turn.
+                if (
+                    isinstance(exc, InvalidNativeToolArguments)
+                    and not upstream_payload_chunks
+                ):
+                    feedback_response = await _retry_with_tool_feedback(
+                        messages, model, options, exc, request_id
+                    )
+                    if feedback_response is not None:
+                        response = feedback_response
+                        retry_yielded = False
+                        try:
+                            async for chunk in forward_response(response):
+                                retry_yielded = True
+                                yield chunk
+                        except (asyncio.CancelledError, GeneratorExit):
+                            raise
+                        except Exception as retry_exc:
+                            if retry_yielded:
+                                raise
+                            logger.warning(
+                                "tool-arguments feedback retry id=%s "
+                                "produced no usable stream error=%s",
+                                request_id,
+                                retry_exc,
+                            )
+                        else:
+                            stream_status = "completed"
+                            return
                 if (
                     (not exc.retryable or exc.observed_model_event)
                     and not native_capacity_error

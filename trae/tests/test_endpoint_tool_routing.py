@@ -686,9 +686,72 @@ class ExplicitEndpointToolRoutingTests(unittest.IsolatedAsyncioTestCase):
                             )
                         ]
                     self.assertIn("invalid native tool arguments", "".join(chunks))
-                    selected.assert_awaited_once()
+                    # Nothing was forwarded before the failure, so the
+                    # dispatcher re-dispatches once with feedback on the same
+                    # route (creation-time errors never reach that branch);
+                    # the remote route must still not be replayed.
+                    self.assertEqual(
+                        selected.await_count, 1 if creation_error else 2
+                    )
                     remote.assert_not_awaited()
                     usage.assert_called_once_with({"usage": exc.usage}, "auto")
+
+    async def test_tool_arguments_error_retries_once_with_feedback_and_succeeds(self):
+        # When the broken call was the turn's only output (nothing forwarded),
+        # the dispatcher re-dispatches the same route once with a feedback
+        # user turn so the model can resend the tool call — the client sees a
+        # normal completion, not an error frame.
+        invalid_exc = InvalidNativeToolArguments(
+            "Trae upstream returned invalid JSON arguments for tool Bash",
+            retryable=False,
+            observed_model_event=True,
+            usage={"prompt_tokens": 11, "completion_tokens": 3},
+        )
+        invalid_exc.tool_name = "Bash"
+        invalid_exc.tool_arguments = '"ls -la}'
+
+        async def broken_body():
+            raise invalid_exc
+            yield "unreachable"
+
+        async def good_body():
+            yield 'data: {"choices":[{"delta":{"content":"pong"}}]}\n\n'
+            yield "data: [DONE]\n\n"
+
+        selected = AsyncMock(
+            side_effect=[
+                main_module.StreamingResponse(broken_body()),
+                main_module.StreamingResponse(good_body()),
+            ]
+        )
+        with (
+            patch.object(main_module, "UPSTREAM_MODE", "ide"),
+            patch.object(main_module, "_remote_only_models", return_value=set()),
+            patch.object(main_module, "run_ide_chat", selected),
+            patch.object(main_module, "_run_remote_with_retry", AsyncMock()) as remote,
+            patch.object(main_module, "_track_usage_from_result") as usage,
+        ):
+            chunks = [
+                chunk
+                async for chunk in main_module._deferred_dispatch_stream(
+                    [{"role": "user", "content": "Reply pong"}],
+                    "auto",
+                    {"_upstream_mode": "ide"},
+                )
+            ]
+        joined = "".join(chunks)
+        self.assertIn('"content":"pong"', joined)
+        self.assertNotIn("invalid JSON arguments", joined)
+        self.assertEqual(joined.count("data: [DONE]"), 1)
+        self.assertEqual(selected.await_count, 2)
+        remote.assert_not_awaited()
+        # The second attempt carries the feedback turn naming the broken tool.
+        feedback = selected.await_args_list[1].args[0]
+        self.assertEqual(feedback[-1]["role"], "user")
+        self.assertIn("`Bash`", feedback[-1]["content"])
+        self.assertIn('"ls -la}', feedback[-1]["content"])
+        # The failed attempt's usage is recorded exactly once.
+        usage.assert_called_once_with({"usage": invalid_exc.usage}, "auto")
 
     async def test_retryable_truly_empty_stream_still_falls_back(self):
         exc = EmptyUpstreamResponse(

@@ -544,6 +544,89 @@ class IdeNativeToolDeltaTests(unittest.IsolatedAsyncioTestCase):
         call = cli_client.normalize_tool_call(_call("}", name="read_file"))
         self.assertEqual(sse._ensure_native_tool_arguments([call]), [])
 
+    async def test_lost_head_arguments_are_rebuilt_from_tool_schema(self):
+        # The frame carrying {"path": was lost; only the JSON tail arrived.
+        frames = [
+            [_call('"README.md"}', name="read_file", call_id="call_head_lost")],
+        ]
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                calls = await self._calls(frames, stream)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(
+                    calls[0]["function"]["arguments"], '{"path":"README.md"}'
+                )
+
+    def test_lost_head_arguments_fall_back_to_known_tool_keys(self):
+        # No schema on the call site: the static Trae/VSCode key map applies.
+        call = cli_client.normalize_tool_call(
+            _call('"ls -la"}', name="Bash", call_id="call_bash")
+        )
+        repaired = sse._ensure_native_tool_arguments([call], None, strict=True)
+        self.assertEqual(len(repaired), 1)
+        self.assertEqual(
+            repaired[0]["function"]["arguments"], '{"command":"ls -la"}'
+        )
+
+    def test_unrecoverable_tail_still_fails_when_turn_is_empty(self):
+        # Truncated mid-value: inventing the rest could execute a command the
+        # model never wrote, so an empty turn must still fail loudly.
+        call = cli_client.normalize_tool_call(
+            _call('s -la"}', name="Bash", call_id="call_bash")
+        )
+        with self.assertRaises(sse.InvalidNativeToolArguments) as error:
+            sse._ensure_native_tool_arguments([call], None, strict=True)
+        self.assertEqual(error.exception.tool_name, "Bash")
+        self.assertIn("invalid JSON arguments", str(error.exception))
+
+    async def test_strict_drop_keeps_turn_with_visible_text(self):
+        # A broken call alongside real content degrades instead of failing
+        # the whole turn: the text is delivered, the bad call never leaks.
+        lines = [
+            'data: {"response":"partial answer"}',
+            "event: output",
+            "data: "
+            + json.dumps(
+                {"tool_calls": [_call("not-json", name="read_file", call_id="c_bad")]}
+            ),
+            "",
+            "event: token_usage",
+            'data: {"input_token":3,"output_token":5}',
+            "",
+            "event: done",
+            'data: {"finish_reason":"tool_calls"}',
+            "",
+        ]
+        chunks = [
+            chunk
+            async for chunk in sse.translate_ide_stream(
+                LineResponse(lines), "m", allowed_tools=TOOLS, fail_on_empty=True
+            )
+        ]
+        joined = "".join(chunks)
+        self.assertIn("partial answer", joined)
+        self.assertNotIn("c_bad", joined)
+        self.assertNotIn("invalid JSON arguments", joined)
+        self.assertIn("data: [DONE]\n\n", chunks)
+
+    async def test_strict_drop_keeps_valid_sibling_call(self):
+        # The broken call must not take down a valid sibling in the same
+        # turn (validation is decided after the whole batch, not per item).
+        frames = [
+            [
+                _call("not-json", name="read_file", call_id="c_bad", index=0),
+                _call('{"path":"a.txt"}', name="read_file", call_id="c_ok", index=1),
+            ],
+        ]
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                calls = await self._calls(frames, stream)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(calls[0]["id"], "c_ok")
+                self.assertEqual(
+                    calls[0]["function"]["arguments"], '{"path":"a.txt"}'
+                )
+
     async def test_zero_argument_native_call_still_returns_a_json_object(self):
         frames = [[_call("{}", name="read_file", call_id="call_native")]]
         for stream in (False, True):

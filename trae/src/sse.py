@@ -1148,12 +1148,15 @@ class ToolCallAccumulator:
                 and not function.get("name")
                 and str(function.get("arguments") or "").strip()
             ):
-                raise InvalidNativeToolArguments(
+                error = InvalidNativeToolArguments(
                     "Trae upstream returned tool arguments for an unknown call "
                     "without a function name",
                     retryable=False,
                     observed_model_event=True,
                 )
+                error.tool_name = ""
+                error.tool_arguments = str(function.get("arguments") or "")
+                raise error
             if existing_key is not None:
                 existing = self._calls[existing_key]
                 existing_function = existing.get("function") if existing else None
@@ -1179,6 +1182,13 @@ class ToolCallAccumulator:
         for fallback_index, raw in enumerate(calls):
             call = _normalize_tool_call(raw, index=fallback_index)
             if not call:
+                # 头部分片可能以无法归一化的形态到达（本地丢头的候选点之一），
+                # 记录原始片段，供下次判定丢头发生在本地还是上游。
+                logger.warning(
+                    "[norm-drop] unusable tool fragment idx=%s raw=%r",
+                    fallback_index,
+                    str(raw)[:160],
+                )
                 continue
             function = call["function"]
             call_id = call["id"]
@@ -1203,6 +1213,19 @@ class ToolCallAccumulator:
                 if not isinstance(existing_function, dict) or not existing_function.get(
                     "name"
                 ):
+                    # 无 name 且匹配不到父调用的分片被静默丢弃——若它是 JSON 头部
+                    # （以 { [ 开头），整条调用的参数就只剩尾片段，流末尾必然
+                    # 触发 strict 的 invalid JSON arguments。留日志以便区分
+                    # 上游丢头 vs 本地丢头。
+                    if str(function.get("arguments") or "").lstrip()[:1] in ("{", "["):
+                        logger.warning(
+                            "[head-drop] nameless head fragment dropped key=%r "
+                            "id=%r index=%r args=%r",
+                            key,
+                            call_id,
+                            call.get("index"),
+                            str(function.get("arguments"))[:160],
+                        )
                     continue
                 function["name"] = existing_function["name"]
             if existing is not None:
@@ -1496,12 +1519,93 @@ def _split_json_stream(text: str):
     return out
 
 
+# The upstream occasionally loses the SSE frame that opens a tool call's
+# arguments (``{"key":``), leaving only the JSON tail — which never parses
+# and cannot be repaired by closing brackets.  When the tool's schema is
+# known we can prepend the first parameter name and keep the call instead
+# of dropping it (or failing the whole turn in strict mode).
+_TOOL_HEAD_KEYS = {
+    "Bash": "command",
+    "Read": "path",
+    "Write": "path",
+    "Edit": "path",
+    "Glob": "pattern",
+    "Grep": "pattern",
+}
+
+
+def _tool_head_property(name: Any, tools: Any) -> str:
+    """First parameter name of tool ``name`` from the request tool schema."""
+    tool_name = str(name or "")
+    if not tool_name:
+        return ""
+    if isinstance(tools, (list, tuple)):
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+            function = tool.get("function")
+            function = function if isinstance(function, dict) else tool
+            if str(function.get("name") or "") != tool_name:
+                continue
+            params = function.get("parameters") or function.get("input_schema")
+            properties = params.get("properties") if isinstance(params, dict) else None
+            if isinstance(properties, dict):
+                for key in properties:
+                    if isinstance(key, str) and key.strip():
+                        return key
+            return ""
+    return _TOOL_HEAD_KEYS.get(tool_name, "")
+
+
+def _recover_missing_tool_head(name: Any, arguments: Any, tools: Any) -> Optional[str]:
+    """Rebuild tool arguments whose opening ``{"key":`` frame was lost.
+
+    Returns the repaired JSON string, or ``None`` when the fragment cannot
+    be trusted.  Only exact parses are accepted: a fragment that still needs
+    closing brackets was truncated mid-value, and inventing the rest of a
+    value could execute a tool call the model never wrote.
+    """
+    text = str(arguments or "")
+    stripped = text.lstrip()
+    if not stripped or stripped[:1] in ("{", "["):
+        return None  # nothing to recover, or the head is present
+    key = _tool_head_property(name, tools)
+    if key:
+        candidate = '{"' + key + '":' + stripped
+        try:
+            json.loads(candidate)
+            return candidate
+        except Exception:
+            pass
+    # Only the opening brace was lost: the tail still carries "key": value}.
+    if stripped.startswith('"'):
+        candidate = "{" + stripped
+        try:
+            json.loads(candidate)
+            return candidate
+        except Exception:
+            pass
+    return None
+
+
 def _ensure_native_tool_arguments(
-    calls: list[dict], usage: Any = None, *, strict: bool = False
+    calls: list[dict],
+    usage: Any = None,
+    *,
+    strict: bool = False,
+    tools: Any = None,
+    has_visible_output: bool = False,
 ) -> list[dict]:
-    """Validate/repair/split malformed native delta tool arguments."""
+    """Validate/repair/split malformed native delta tool arguments.
+
+    ``strict`` fails the turn only when an unusable call is the turn's sole
+    output (no other valid call, no visible text/reasoning); otherwise the
+    bad call is dropped and the rest of the turn is kept (``[tool-degrade]``).
+    ``tools`` is the request tool schema used to rebuild a lost head.
+    """
     repaired_any = False
     kept: list[dict] = []
+    dropped: list[dict] = []
     for call in calls:
         function = call.get("function") or {}
         arguments = function.get("arguments")
@@ -1564,20 +1668,47 @@ def _ensure_native_tool_arguments(
         if stripped in ("}", "]", "", "{}", "[]"):
             logger.warning("[drop] orphan closing fragment %r", stripped[:30])
             continue
+        repaired_any = True
+        recovered = _recover_missing_tool_head(function.get("name"), arguments, tools)
+        if recovered is not None:
+            logger.warning(
+                "[head-recover] tool=%s %r -> %r",
+                function.get("name") or "?",
+                str(arguments)[:80],
+                recovered[:80],
+            )
+            function["arguments"] = recovered
+            kept.append(call)
+            continue
         logger.warning(
             "[tool-drop] dropping unusable call %s args=%r",
             function.get("name") or "?",
             str(arguments)[:200],
         )
-        repaired_any = True
-        if strict:
-            raise InvalidNativeToolArguments(
-                "Trae upstream returned invalid JSON arguments for tool "
-                f"{function.get('name') or '?'}",
-                retryable=False,
-                usage=usage,
-                observed_model_event=True,
-            )
+        dropped.append(call)
+    if dropped and strict and not kept and not has_visible_output:
+        first = dropped[0]
+        first_function = first.get("function")
+        first_function = first_function if isinstance(first_function, dict) else {}
+        first_name = str(first_function.get("name") or "")
+        error = InvalidNativeToolArguments(
+            "Trae upstream returned invalid JSON arguments for tool "
+            f"{first_name or '?'}",
+            retryable=False,
+            usage=usage,
+            observed_model_event=True,
+        )
+        error.tool_name = first_name
+        error.tool_arguments = str(first_function.get("arguments") or "")
+        raise error
+    if dropped and strict:
+        logger.warning(
+            "[tool-degrade] dropped %d unusable tool call(s); turn keeps %d "
+            "call(s) visible_output=%s",
+            len(dropped),
+            len(kept),
+            bool(has_visible_output),
+        )
     if repaired_any:
         logger.warning("[repair] repaired/split/dropped unusable tool call(s) this turn")
     return kept
@@ -2349,7 +2480,13 @@ async def translate_ide_stream(
         )
     tool_calls.set_calls(
         _ensure_native_tool_arguments(
-            tool_calls.calls(), final_usage, strict=True
+            tool_calls.calls(),
+            final_usage,
+            strict=True,
+            tools=allowed_tools,
+            has_visible_output=bool(
+                content_count or response_text.visible.strip() or reasoning_summary
+            ),
         )
     )
     if reasoning_summary:
@@ -3668,7 +3805,13 @@ async def collect_nonstream_ide(
             observed_model_event=observed_model_event,
         )
     tool_calls.set_calls(
-        _ensure_native_tool_arguments(tool_calls.calls(), usage, strict=True)
+        _ensure_native_tool_arguments(
+            tool_calls.calls(),
+            usage,
+            strict=True,
+            tools=allowed_tools,
+            has_visible_output=bool(full.strip() or reasoning_summary),
+        )
     )
     if not full.strip() and not reasoning_summary and not tool_calls.has_calls and saw_completed_repeat:
         raise RepeatedCompletedToolResponse(
