@@ -2,6 +2,7 @@ package loomy
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -40,6 +41,71 @@ func TestBuildContent(t *testing.T) {
 		t.Errorf("续轮仍应带当前用户消息，实际: %s", cont)
 	}
 }
+
+// TestMessageContentArray 守卫 CodeBuddy/Claude Code 等客户端用数组形态传
+// content 的场景（历史上会因 Content string 直接 400）。
+func TestMessageContentArray(t *testing.T) {
+	raw := `{"model":"GLM-5.3-Flash","messages":[
+		{"role":"system","content":[{"type":"text","text":"你是法律顾问"}]},
+		{"role":"user","content":[{"type":"text","text":"第一问"},{"type":"text","text":"第二问"}]}
+	]}`
+	var req struct {
+		Model    string    `json:"model"`
+		Messages []Message `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(raw), &req); err != nil {
+		t.Fatalf("数组形态 content 解析失败: %v", err)
+	}
+	if len(req.Messages) != 2 {
+		t.Fatalf("消息数不对: %d", len(req.Messages))
+	}
+	if got := req.Messages[0].Content.String(); got != "你是法律顾问" {
+		t.Errorf("system 文本提取错误: %q", got)
+	}
+	if got := req.Messages[1].Content.String(); got != "第一问\n第二问" {
+		t.Errorf("多 part 应换行拼接，实际: %q", got)
+	}
+	built := BuildContent(req.Messages, false)
+	if !strings.Contains(built, "你是法律顾问") || !strings.Contains(built, "第二问") {
+		t.Errorf("BuildContent 应包含提取出的文本，实际: %s", built)
+	}
+}
+
+// TestMessageImageParts 守卫 content 数组的 image_url 提取与 ContentParts 组装。
+func TestMessageImageParts(t *testing.T) {
+	raw := `{"role":"user","content":[
+		{"type":"text","text":"看图"},
+		{"type":"image_url","image_url":{"url":"data:image/png;base64,` + tinyPNGBase64 + `"}}
+	]}`
+	var m Message
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if got := m.Content.String(); got != "看图" {
+		t.Errorf("text 提取错误: %q", got)
+	}
+	if len(m.Images) != 1 || m.Images[0].URL == "" {
+		t.Fatalf("应提取到 1 张图片，实际 %d", len(m.Images))
+	}
+
+	ups := []*UploadResult{{
+		ConversationID: "c1", FileID: "upl_1",
+		FileName: "image.png", MediaType: "image/png", Size: 70,
+	}}
+	if got := ContentParts("纯文本", nil); got != "纯文本" {
+		t.Errorf("无图时应保持字符串形态，实际 %T", got)
+	}
+	arr, ok := ContentParts("文本", ups).([]map[string]any)
+	if !ok || len(arr) != 2 {
+		t.Fatalf("带图应产出 2 个 part，实际 %T", ContentParts("文本", ups))
+	}
+	if arr[0]["type"] != "text" || arr[1]["type"] != "file_ref" {
+		t.Errorf("part 类型错误: %v / %v", arr[0]["type"], arr[1]["type"])
+	}
+}
+
+// tinyPNGBase64 1x1 像素 PNG。
+const tinyPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 
 // TestParseEvent 守卫 SSE 帧解析：内容、会话 ID、结束标记。
 func TestParseEvent(t *testing.T) {

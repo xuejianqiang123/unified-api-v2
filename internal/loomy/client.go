@@ -20,12 +20,16 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -33,33 +37,114 @@ import (
 // DefaultAPIURL 上游聊天补全端点。
 const DefaultAPIURL = "https://loomy.xunfei.cn/web/api/chat/completions"
 
-// Message 是 OpenAI messages 里本包关心的最小字段。
-type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+// MessageContent 是 OpenAI messages[].content 的文本归一化结果：纯字符串形态
+// 原样保存；part 数组形态取 text part 拼接。
+type MessageContent string
+
+// String 返回纯文本内容。
+func (c MessageContent) String() string { return string(c) }
+
+// ImageInput 是从 messages[].content[] 提取出来、待上传到 Loomy 的图片引用。
+// 解析阶段只记 URL（http(s) 或 data:base64），物化（下载/解码）延迟到上传时。
+type ImageInput struct {
+	URL string
 }
 
-// Request 是上游请求体：只有四个字段。
+// Message 是 OpenAI messages 里本包关心的最小字段。
+type Message struct {
+	Role    string         `json:"role"`
+	Content MessageContent `json:"content"`
+	// Images 从 content 数组的 image_url part 提取，不参与序列化。
+	Images []*ImageInput `json:"-"`
+}
+
+// UnmarshalJSON 解析 message，并把 content 的两种形态归一化：
+//   - 纯字符串 → Content
+//   - part 数组 → text/input_text 拼进 Content；image_url 提取进 Images
+func (m *Message) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	m.Role = raw.Role
+	c := bytes.TrimSpace(raw.Content)
+	if len(c) == 0 || string(c) == "null" {
+		return nil
+	}
+	switch c[0] {
+	case '"':
+		var s string
+		if err := json.Unmarshal(c, &s); err != nil {
+			return err
+		}
+		m.Content = MessageContent(s)
+	case '[':
+		var parts []struct {
+			Type     string `json:"type"`
+			Text     string `json:"text"`
+			ImageURL *struct {
+				URL string `json:"url"`
+			} `json:"image_url"`
+		}
+		if err := json.Unmarshal(c, &parts); err != nil {
+			return err
+		}
+		var b strings.Builder
+		for _, p := range parts {
+			if p.Text != "" {
+				if b.Len() > 0 {
+					b.WriteByte('\n')
+				}
+				b.WriteString(p.Text)
+			}
+			if p.ImageURL != nil && strings.TrimSpace(p.ImageURL.URL) != "" {
+				m.Images = append(m.Images, &ImageInput{URL: p.ImageURL.URL})
+			}
+		}
+		m.Content = MessageContent(b.String())
+	default:
+		return fmt.Errorf("content 必须是字符串或 part 数组")
+	}
+	return nil
+}
+
+// Request 是上游请求体：只有四个字段。Content 通常是把 messages 折叠成的单条
+// 字符串；带图时是 part 数组（[{type:"text",...},{type:"file_ref",...}]，
+// 前端 bundle 实测形态，2026-11-24 上游实测两种形态都接受）。
 type Request struct {
 	ConversationID string `json:"conversationId"`
 	MessageID      string `json:"messageId"`
 	Model          string `json:"model"`
-	Content        string `json:"content"`
+	Content        any    `json:"content"`
 }
+
+// DefaultUploadPath 是图片上传端点的固定路径（同一 host 下的 /api 前缀，
+// 与 chat 的 /web/api 前缀不同；2026-11-24 前端抓包确认）。
+const DefaultUploadPath = "/api/workspace/chat/files"
 
 // Client 与上游交互。
 type Client struct {
-	apiURL string
-	http   *http.Client
+	apiURL    string
+	uploadURL string
+	http      *http.Client
 }
 
-// NewClient 构造客户端。apiURL 为空时用官方端点。
+// NewClient 构造客户端。apiURL 为空时用官方端点。上传端点复用 apiURL 的
+// host（反代场景自动跟随），路径固定为 DefaultUploadPath。
 func NewClient(apiURL string) *Client {
 	if apiURL == "" {
 		apiURL = DefaultAPIURL
 	}
+	uploadURL := apiURL
+	if u, err := url.Parse(apiURL); err == nil && u.Host != "" {
+		uploadURL = u.Scheme + "://" + u.Host + DefaultUploadPath
+	}
 	return &Client{
 		apiURL: apiURL,
+		uploadURL: uploadURL,
 		// 不设总时长：流式响应可能持续数分钟。首字节超时靠 Transport。
 		http: &http.Client{
 			Transport: &http.Transport{
@@ -70,17 +155,220 @@ func NewClient(apiURL string) *Client {
 	}
 }
 
-// NewMessageID 生成上游要求的 messageId 形态：web-<uuid>。
-// 用 crypto/rand 自己拼，避免为一个 UUID 引入额外依赖。
-func NewMessageID() string {
+// newUUID 生成 RFC 4122 v4 UUID（上传接口的 idempotency-key 用）。
+func newUUID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return fmt.Sprintf("web-%d", time.Now().UnixNano())
+		return fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 	b[6] = (b[6] & 0x0f) | 0x40 // version 4
 	b[8] = (b[8] & 0x3f) | 0x80 // variant
 	h := hex.EncodeToString(b[:])
-	return "web-" + h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
+	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
+}
+
+// NewMessageID 生成上游要求的 messageId 形态：web-<uuid>。
+// 用 crypto/rand 自己拼，避免为一个 UUID 引入额外依赖。
+func NewMessageID() string { return "web-" + newUUID() }
+
+// UploadResult 是一次成功上传的图片文件（与上传时绑定的会话）。
+type UploadResult struct {
+	ConversationID string
+	FileID         string
+	FileName       string
+	MediaType      string
+	Size           int64
+}
+
+// maxImageBytes 单张图片物化后的上限；超过直接拒绝，不做压缩。
+const maxImageBytes = 20 << 20
+
+// httpDown 物化 http(s) 图片的短超时客户端（与流式 chat 的 client 分开）。
+var httpDown = &http.Client{Timeout: 60 * time.Second}
+
+// browserUA 上传端点的浏览器形态 UA（该端点对非浏览器指纹拒绝）。
+const browserUA = "Mozilla/5.0 (Linux; Android 16; Pixel 10) AppleWebKit/537.36 " +
+	"(KHTML, like Gecko) Edg/157.0.0.0 Mobile Safari/537.36"
+
+// materializeImage 把 image_url 的 URL 物化成字节与媒体类型。
+// 支持 data:base64 与 http(s)；媒体类型按白名单归一化。
+func materializeImage(rawURL string) (name, mediaType string, data []byte, err error) {
+	switch {
+	case strings.HasPrefix(rawURL, "data:"):
+		head, payload, ok := strings.Cut(rawURL, ",")
+		if !ok || !strings.Contains(head, ";base64") {
+			return "", "", nil, fmt.Errorf("不支持的 data URL（只接受 base64）")
+		}
+		head = strings.TrimPrefix(strings.TrimPrefix(head, "data:"), ";base64")
+		data, err = base64.StdEncoding.DecodeString(payload)
+		if err != nil {
+			return "", "", nil, fmt.Errorf("data URL base64 解码失败: %w", err)
+		}
+		mediaType = strings.TrimSpace(strings.SplitN(head, ";", 2)[0])
+	case strings.HasPrefix(rawURL, "http://"), strings.HasPrefix(rawURL, "https://"):
+		resp, derr := httpDown.Get(rawURL)
+		if derr != nil {
+			return "", "", nil, fmt.Errorf("下载图片失败: %w", derr)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return "", "", nil, fmt.Errorf("下载图片失败: HTTP %d", resp.StatusCode)
+		}
+		data, err = io.ReadAll(io.LimitReader(resp.Body, maxImageBytes+1))
+		if err != nil {
+			return "", "", nil, fmt.Errorf("读取图片失败: %w", err)
+		}
+		if len(data) > maxImageBytes {
+			return "", "", nil, fmt.Errorf("图片超过 %d MB 上限", maxImageBytes>>20)
+		}
+		mediaType = strings.TrimSpace(strings.SplitN(resp.Header.Get("Content-Type"), ";", 2)[0])
+	default:
+		return "", "", nil, fmt.Errorf("不支持的图片 URL 形态")
+	}
+
+	mediaType = strings.ToLower(mediaType)
+	if mediaType == "image/jpg" {
+		mediaType = "image/jpeg"
+	}
+	switch mediaType {
+	case "image/png":
+		name = "image.png"
+	case "image/jpeg":
+		name = "image.jpg"
+	case "image/webp":
+		name = "image.webp"
+	case "image/gif":
+		name = "image.gif"
+	default:
+		return "", "", nil, fmt.Errorf("不支持的图片类型 %q（支持 png/jpeg/webp/gif）", mediaType)
+	}
+	if len(data) == 0 {
+		return "", "", nil, fmt.Errorf("图片内容为空")
+	}
+	return name, mediaType, data, nil
+}
+
+// UploadImage 把一张图片上传到 Loomy，返回 file 与它绑定的会话。
+// 发消息时必须使用返回的 ConversationID，附件才对模型可见（2026-11-24 实测）。
+func (c *Client) UploadImage(ctx context.Context, cookie string, img *ImageInput) (*UploadResult, error) {
+	if img == nil || strings.TrimSpace(img.URL) == "" {
+		return nil, fmt.Errorf("图片 URL 为空")
+	}
+	name, mediaType, data, err := materializeImage(img.URL)
+	if err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	// 不能用 CreateFormFile：它把 part 的 Content-Type 硬编码为
+	// application/octet-stream，上游按 part MIME 判白名单会直接拒绝
+	// （2026-11-24 实测 400 code=100001）。这里显式携带真实图片类型。
+	h := make(textproto.MIMEHeader)
+	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename="%s"`, name))
+	h.Set("Content-Type", mediaType)
+	fw, err := w.CreatePart(h)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := fw.Write(data); err != nil {
+		return nil, err
+	}
+	if err := w.Close(); err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.uploadURL, &buf)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Cookie", cookie)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	req.Header.Set("idempotency-key", newUUID())
+	req.Header.Set("Origin", originOf(c.uploadURL))
+	req.Header.Set("Referer", originOf(c.uploadURL)+"/chat")
+	// 上传端点做指纹校验：Go 默认 UA 会被判「MIME 不在白名单」（2026-11-24
+	// 实测 400 code=100001），带浏览器形态 UA 后同一文件即可通过。
+	req.Header.Set("User-Agent", browserUA)
+	req.Header.Set("Accept", "*/*")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("上传请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("上传失败: HTTP %d %s", resp.StatusCode, truncateBody(body))
+	}
+	var out struct {
+		Success bool `json:"success"`
+		Data    struct {
+			ConversationID string `json:"conversation_id"`
+			List           []struct {
+				FileID    string `json:"file_id"`
+				FileName  string `json:"file_name"`
+				MediaType string `json:"media_type"`
+				Size      int64  `json:"size"`
+				Status    string `json:"status"`
+			} `json:"list"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("上传响应解析失败: %w", err)
+	}
+	if !out.Success || len(out.Data.List) == 0 {
+		return nil, fmt.Errorf("上传被上游拒绝: %s", truncateBody(body))
+	}
+	f := out.Data.List[0]
+	if !strings.EqualFold(f.Status, "ready") || f.FileID == "" {
+		return nil, fmt.Errorf("上传未就绪（status=%s）", f.Status)
+	}
+	return &UploadResult{
+		ConversationID: out.Data.ConversationID,
+		FileID:         f.FileID,
+		FileName:       f.FileName,
+		MediaType:      f.MediaType,
+		Size:           f.Size,
+	}, nil
+}
+
+func originOf(rawURL string) string {
+	if u, err := url.Parse(rawURL); err == nil && u.Host != "" {
+		return u.Scheme + "://" + u.Host
+	}
+	return "https://loomy.xunfei.cn"
+}
+
+func truncateBody(b []byte) string {
+	s := strings.TrimSpace(string(b))
+	if len(s) > 200 {
+		s = s[:200] + "…"
+	}
+	return s
+}
+
+// ContentParts 组装上游 content：无图时就是单条字符串；带图时是
+// [{type:"text",...},{type:"file_ref",...},...]（前端 bundle 实测形态）。
+func ContentParts(text string, ups []*UploadResult) any {
+	if len(ups) == 0 {
+		return text
+	}
+	parts := []map[string]any{{"type": "text", "text": text}}
+	for _, u := range ups {
+		parts = append(parts, map[string]any{
+			"type": "file_ref",
+			"file_ref": map[string]any{
+				"file_id":    u.FileID,
+				"file_name":  u.FileName,
+				"media_type": u.MediaType,
+				"size":       u.Size,
+				"file_kind":  "image",
+				"status":     "ready",
+			},
+		})
+	}
+	return parts
 }
 
 // BuildContent 把 OpenAI 的 messages 折成 Loomy 需要的单条 content。
@@ -112,13 +400,15 @@ func BuildContent(messages []Message, hasConversation bool) string {
 // lastUserText 取最后一条 user 消息；没有则退回最后一条任意消息。
 func lastUserText(msgs []Message) string {
 	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == "user" && strings.TrimSpace(msgs[i].Content) != "" {
-			return msgs[i].Content
+		text := msgs[i].Content.String()
+		if msgs[i].Role == "user" && strings.TrimSpace(text) != "" {
+			return text
 		}
 	}
 	for i := len(msgs) - 1; i >= 0; i-- {
-		if strings.TrimSpace(msgs[i].Content) != "" {
-			return msgs[i].Content
+		text := msgs[i].Content.String()
+		if strings.TrimSpace(text) != "" {
+			return text
 		}
 	}
 	return ""
@@ -128,8 +418,9 @@ func lastUserText(msgs []Message) string {
 func systemText(msgs []Message) string {
 	parts := make([]string, 0, 2)
 	for _, m := range msgs {
-		if (m.Role == "system" || m.Role == "developer") && strings.TrimSpace(m.Content) != "" {
-			parts = append(parts, m.Content)
+		text := m.Content.String()
+		if (m.Role == "system" || m.Role == "developer") && strings.TrimSpace(text) != "" {
+			parts = append(parts, text)
 		}
 	}
 	return strings.Join(parts, "\n\n")

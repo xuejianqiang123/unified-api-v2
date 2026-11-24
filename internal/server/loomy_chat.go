@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha1"
 	"encoding/hex"
@@ -68,6 +69,15 @@ func (p *LoomyProvider) Chat(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, "bad_request", "缺少 model")
 		return
 	}
+	// 带图请求：解析阶段已把 image_url part 提取进 Messages[].Images。
+	// 超上限截断（上游附件与会话绑定，多图按首张的 conversationId 归并）。
+	var images []*loomypkg.ImageInput
+	for _, m := range req.Messages {
+		images = append(images, m.Images...)
+	}
+	if len(images) > maxImagesPerRequest {
+		images = images[:maxImagesPerRequest]
+	}
 
 	// 会话键：网关已按请求头族统一生成并注入 X-Session-Id；缺失时用首条
 	// 用户消息派生，保证同一对话能续上 conversationId。
@@ -94,11 +104,25 @@ func (p *LoomyProvider) Chat(w http.ResponseWriter, r *http.Request) {
 		hadAccount = true
 		accName, cookie = name, ck
 		conv = p.convs.Get(sess, req.Model, accName)
+		var content any = loomypkg.BuildContent(req.Messages, conv != "")
+		if len(images) > 0 {
+			// 图片必须与消息同会话（上游按 conversationId 挂附件）：先上传，
+			// 本次请求改用上传返回的会话，并用数组形态 content 携带 file_ref。
+			// 换号重试时图片属于旧账号的会话，必须整批重传。
+			ups, uerr := uploadAll(r.Context(), p.client, cookie, images)
+			if uerr != nil {
+				openErr = fmt.Errorf("图片上传失败: %w", uerr)
+				tried[accName] = true
+				continue
+			}
+			conv = ups[0].ConversationID
+			content = loomypkg.ContentParts(loomypkg.BuildContent(req.Messages, false), ups)
+		}
 		resp, openErr = p.client.Open(r.Context(), loomypkg.Request{
 			ConversationID: conv,
 			MessageID:      loomypkg.NewMessageID(),
 			Model:          req.Model,
-			Content:        loomypkg.BuildContent(req.Messages, conv != ""),
+			Content:        content,
 		}, cookie)
 		if openErr == nil {
 			break
@@ -236,11 +260,29 @@ func (p *LoomyProvider) pickAccount(exclude map[string]bool) (name, cookie strin
 	return "", ""
 }
 
+// maxImagesPerRequest 单请求图片上限。上游按 conversationId 挂附件，多图
+// 归并到首张上传返回的会话；量级对齐前端常见的多图发送场景。
+const maxImagesPerRequest = 4
+
+// uploadAll 依次上传图片；任一失败整体报错（failover 换号时整批重传）。
+func uploadAll(ctx context.Context, c *loomypkg.Client, cookie string, imgs []*loomypkg.ImageInput) ([]*loomypkg.UploadResult, error) {
+	ups := make([]*loomypkg.UploadResult, 0, len(imgs))
+	for _, img := range imgs {
+		u, err := c.UploadImage(ctx, cookie, img)
+		if err != nil {
+			return nil, err
+		}
+		ups = append(ups, u)
+	}
+	return ups, nil
+}
+
 // loomyLocalSessionKey 在没有 X-Session-Id 时，用首条用户消息派生会话键。
 func loomyLocalSessionKey(msgs []loomypkg.Message) string {
 	for _, m := range msgs {
-		if m.Role == "user" && strings.TrimSpace(m.Content) != "" {
-			sum := sha1.Sum([]byte(m.Content))
+		text := m.Content.String()
+		if m.Role == "user" && strings.TrimSpace(text) != "" {
+			sum := sha1.Sum([]byte(text))
 			return "local-" + hex.EncodeToString(sum[:8])
 		}
 	}
